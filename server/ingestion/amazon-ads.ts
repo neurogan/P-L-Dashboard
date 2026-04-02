@@ -71,8 +71,6 @@ export async function pullAmazonAdMetrics(
         .insert(adWeeklySummary)
         .values({
           asin: row.asin,
-          sku: row.sku,
-          productTitle: row.productTitle,
           weekStartDate: row.weekStartDate,
           spend: row.spend,
           impressions: row.impressions,
