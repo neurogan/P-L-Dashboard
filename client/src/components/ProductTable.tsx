@@ -13,8 +13,7 @@ import {
 import { ArrowUpDown, ArrowUp, ArrowDown, AlertTriangle, ChevronRight, ChevronDown, Columns3, Link2 } from "lucide-react";
 import {
   ProductAggregate, formatCurrency, formatNumber, formatPercent,
-  getProductColor, getAmazonExpandedMetrics, getPriorPeriod,
-  detectPreset, data, DatePreset,
+  getProductColor, detectPreset, DatePreset,
 } from "@/lib/data";
 
 interface Props {
@@ -28,6 +27,8 @@ interface Props {
   chartSelectedAsins: string[];
   onToggleChartAsin: (asin: string) => void;
   dateRange: { start: string; end: string };
+  minDate: string;
+  maxDate: string;
 }
 
 function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
@@ -37,7 +38,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
 
 function truncate(str: string, len: number) {
   if (str.length <= len) return str;
-  return str.slice(0, len) + "…";
+  return str.slice(0, len) + "\u2026";
 }
 
 function FeeSourceIndicator({ feeSource }: { feeSource: string | null }) {
@@ -72,17 +73,17 @@ function renderCellValue(product: ProductAggregate, key: string) {
     case "revenue": return formatCurrency(product.revenue);
     case "totalAmazonFees": return <>{formatCurrency(product.totalAmazonFees)}<FeeSourceIndicator feeSource={product.feeSource} /></>;
     case "netProceeds": return <>{formatCurrency(product.netProceeds)}<FeeSourceIndicator feeSource={product.feeSource} /></>;
-    case "totalCogs": return product.totalCogs != null ? formatCurrency(product.totalCogs) : "—";
-    case "adSpend": return product.adSpend != null ? formatCurrency(product.adSpend) : "—";
-    case "tacos": return product.tacos != null ? formatPercent(product.tacos) : "—";
-    case "acos": return product.acos != null ? formatPercent(product.acos) : "—";
-    case "netProfit": return product.netProfit != null ? formatCurrency(product.netProfit) : "—";
-    case "marginPct": return product.marginPct != null ? formatPercent(product.marginPct) : "—";
+    case "totalCogs": return product.totalCogs != null ? formatCurrency(product.totalCogs) : "\u2014";
+    case "adSpend": return product.adSpend != null ? formatCurrency(product.adSpend) : "\u2014";
+    case "tacos": return product.tacos != null ? formatPercent(product.tacos) : "\u2014";
+    case "acos": return product.acos != null ? formatPercent(product.acos) : "\u2014";
+    case "netProfit": return product.netProfit != null ? formatCurrency(product.netProfit) : "\u2014";
+    case "marginPct": return product.marginPct != null ? formatPercent(product.marginPct) : "\u2014";
     case "unitsSold": return formatNumber(product.unitsSold);
     case "avgPrice": return formatCurrency(product.avgPrice);
     case "orderCount": return formatNumber(product.orderCount);
-    case "refundAmount": return product.refundAmount != null ? formatCurrency(product.refundAmount) : "—";
-    default: return "—";
+    case "refundAmount": return product.refundAmount != null ? formatCurrency(product.refundAmount) : "\u2014";
+    default: return "\u2014";
   }
 }
 
@@ -101,24 +102,14 @@ function getCellClassName(product: ProductAggregate, key: string): string {
 }
 
 // Expanded row component (Feature 4)
-function ExpandedMetrics({ asin, dateRange }: { asin: string; dateRange: { start: string; end: string } }) {
-  const metrics = useMemo(
-    () => getAmazonExpandedMetrics(asin, dateRange.start, dateRange.end),
-    [asin, dateRange]
-  );
-
-  const preset = detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest);
-  const prior = getPriorPeriod(dateRange, preset);
-
-  const priorMetrics = useMemo(() => {
-    if (!prior) return null;
-    return getAmazonExpandedMetrics(asin, prior.start, prior.end);
-  }, [asin, prior]);
-
-  const pctChange = (curr: number | null, prev: number | null) => {
-    if (curr == null || prev == null || prev === 0) return null;
-    return ((curr - prev) / Math.abs(prev)) * 100;
-  };
+// Reads expanded metrics directly from the ProductAggregate object
+function ExpandedMetrics({ product, preset }: { product: ProductAggregate; preset: DatePreset }) {
+  const b2bPctOfTotal = product.b2bRevenue != null && product.revenue > 0
+    ? product.b2bRevenue / product.revenue
+    : null;
+  const b2cPctOfTotal = product.b2cRevenue != null && product.revenue > 0
+    ? product.b2cRevenue / product.revenue
+    : null;
 
   interface MetricCard {
     label: string;
@@ -131,35 +122,35 @@ function ExpandedMetrics({ asin, dateRange }: { asin: string; dateRange: { start
   const cards: MetricCard[] = [
     {
       label: "Avg Units per Order",
-      value: metrics.avgUnitsPerOrder != null ? metrics.avgUnitsPerOrder.toFixed(2) : "—",
-      change: priorMetrics ? pctChange(metrics.avgUnitsPerOrder, priorMetrics.avgUnitsPerOrder) : null,
+      value: product.avgUnitsPerOrder != null ? product.avgUnitsPerOrder.toFixed(2) : "\u2014",
+      change: null,
     },
     {
       label: "Revenue per Order",
-      value: metrics.revenuePerOrder != null ? formatCurrency(metrics.revenuePerOrder) : "—",
-      change: priorMetrics ? pctChange(metrics.revenuePerOrder, priorMetrics.revenuePerOrder) : null,
+      value: product.revenuePerOrder != null ? formatCurrency(product.revenuePerOrder) : "\u2014",
+      change: null,
     },
     {
       label: "Refund Rate",
-      value: metrics.refundRate != null ? `${(metrics.refundRate * 100).toFixed(1)}%` : "—",
-      change: priorMetrics ? pctChange(metrics.refundRate, priorMetrics.refundRate) : null,
+      value: product.refundRate != null ? `${(product.refundRate * 100).toFixed(1)}%` : "\u2014",
+      change: null,
     },
     {
       label: "B2B Revenue",
-      value: metrics.b2bRevenue != null ? formatCurrency(metrics.b2bRevenue) : "—",
-      sub: metrics.b2bPctOfTotal != null ? `${(metrics.b2bPctOfTotal * 100).toFixed(1)}% of total` : undefined,
-      change: priorMetrics ? pctChange(metrics.b2bRevenue, priorMetrics.b2bRevenue) : null,
+      value: product.b2bRevenue != null ? formatCurrency(product.b2bRevenue) : "\u2014",
+      sub: b2bPctOfTotal != null ? `${(b2bPctOfTotal * 100).toFixed(1)}% of total` : undefined,
+      change: null,
     },
     {
       label: "B2C Revenue",
-      value: metrics.b2cRevenue != null ? formatCurrency(metrics.b2cRevenue) : "—",
-      sub: metrics.b2cPctOfTotal != null ? `${(metrics.b2cPctOfTotal * 100).toFixed(1)}% of total` : undefined,
-      change: priorMetrics ? pctChange(metrics.b2cRevenue, priorMetrics.b2cRevenue) : null,
+      value: product.b2cRevenue != null ? formatCurrency(product.b2cRevenue) : "\u2014",
+      sub: b2cPctOfTotal != null ? `${(b2cPctOfTotal * 100).toFixed(1)}% of total` : undefined,
+      change: null,
     },
     {
       label: "B2B Units",
-      value: metrics.b2bUnits != null ? formatNumber(metrics.b2bUnits) : "—",
-      change: priorMetrics ? pctChange(metrics.b2bUnits, priorMetrics.b2bUnits) : null,
+      value: product.b2bUnits != null ? formatNumber(product.b2bUnits) : "\u2014",
+      change: null,
     },
     { label: "Sessions", value: "", change: null, placeholder: "Connect Business Report" },
     { label: "Conversion Rate", value: "", change: null, placeholder: "Connect Business Report" },
@@ -167,7 +158,7 @@ function ExpandedMetrics({ asin, dateRange }: { asin: string; dateRange: { start
   ];
 
   return (
-    <div className="px-4 py-3 grid grid-cols-3 gap-2" data-testid={`expanded-row-${asin}`}>
+    <div className="px-4 py-3 grid grid-cols-3 gap-2" data-testid={`expanded-row-${product.asin}`}>
       {cards.map((card) => (
         <div
           key={card.label}
@@ -203,6 +194,7 @@ function ExpandedMetrics({ asin, dateRange }: { asin: string; dateRange: { start
 export function ProductTable({
   products, totals, sortKey, sortDir, onSort,
   selectedAsin, onSelectProduct, chartSelectedAsins, onToggleChartAsin, dateRange,
+  minDate, maxDate,
 }: Props) {
   const maxSelected = 5;
   const isMaxed = chartSelectedAsins.length >= maxSelected;
@@ -231,6 +223,12 @@ export function ProductTable({
   };
 
   const activeColumns = ALL_COLUMNS.filter((c) => visibleColumns.has(c.key));
+
+  // Product list for color mapping (derived from products prop)
+  const productColorList = useMemo(() => products.map((p) => ({ asin: p.asin })), [products]);
+
+  // Detect the current date preset for expanded rows
+  const preset = useMemo(() => detectPreset(dateRange, minDate, maxDate), [dateRange, minDate, maxDate]);
 
   return (
     <Card data-testid="product-table-card">
@@ -319,7 +317,7 @@ export function ProductTable({
               {products.map((product) => {
                 const isChartSelected = chartSelectedAsins.includes(product.asin);
                 const isDetailSelected = selectedAsin === product.asin;
-                const chartColor = getProductColor(product.asin);
+                const chartColor = getProductColor(product.asin, productColorList);
                 const isExpanded = expandedAsins.has(product.asin);
 
                 return (
@@ -382,7 +380,7 @@ export function ProductTable({
                     {isExpanded && (
                       <TableRow key={`${product.asin}-expanded`} className="hover:bg-transparent">
                         <TableCell colSpan={activeColumns.length + 2} className="p-0 bg-muted/30">
-                          <ExpandedMetrics asin={product.asin} dateRange={dateRange} />
+                          <ExpandedMetrics product={product} preset={preset} />
                         </TableCell>
                       </TableRow>
                     )}

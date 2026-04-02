@@ -12,27 +12,43 @@ import { AdvertisingTab } from "@/components/AdvertisingTab";
 import { SubscribeSaveTab } from "@/components/SubscribeSaveTab";
 import { ParetoTab } from "@/components/ParetoTab";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
-  data,
-  aggregateProducts,
+  useMeta,
+  useProducts,
+  useAdvertising,
+  useUnifiedProducts,
+} from "@/lib/api";
+import {
+  apiProductsToAggregates,
+  apiProductsToShopifyAggregates,
   getTotals,
   exportProfitabilityCsv,
   exportAdCsv,
   exportOverviewCsv,
   exportShopifyCsv,
-  getAdSummaryForRange,
-  getUnifiedProducts,
-  aggregateShopifyProducts,
 } from "@/lib/data";
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Date range state
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({
-    start: data.dateRange.oldest,
-    end: data.dateRange.newest,
-  });
+  // Load metadata for date range
+  const { data: meta, isLoading: metaLoading } = useMeta();
+  const minDate = meta?.["dateRange.oldest"] ?? "";
+  const maxDate = meta?.["dateRange.newest"] ?? "";
+  const metaObj = useMemo(() => {
+    if (!meta?.meta) return null;
+    try { return JSON.parse(meta.meta); } catch { return null; }
+  }, [meta]);
+
+  // Date range state — initialized once meta loads
+  const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
+  const effectiveDateRange = dateRange ?? { start: minDate, end: maxDate };
+
+  // Initialize date range when meta loads
+  if (!dateRange && minDate && maxDate) {
+    setDateRange({ start: minDate, end: maxDate });
+  }
 
   // Selected product for detail drawer (Amazon tab)
   const [selectedAsin, setSelectedAsin] = useState<string | null>(null);
@@ -44,10 +60,17 @@ export default function Dashboard() {
   const [sortKey, setSortKey] = useState<string>("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  // Aggregate Amazon products
+  // Fetch products from API
+  const { data: apiProducts } = useProducts(
+    effectiveDateRange.start,
+    effectiveDateRange.end,
+    "amazon",
+  );
+
+  // Convert to ProductAggregate format
   const products = useMemo(
-    () => aggregateProducts(data.weeklyFacts, dateRange.start, dateRange.end),
-    [dateRange]
+    () => apiProducts ? apiProductsToAggregates(apiProducts) : [],
+    [apiProducts],
   );
 
   // Sort Amazon products
@@ -76,7 +99,7 @@ export default function Dashboard() {
         setSortDir("desc");
       }
     },
-    [sortKey]
+    [sortKey],
   );
 
   const handleToggleChartAsin = useCallback((asin: string) => {
@@ -89,30 +112,54 @@ export default function Dashboard() {
     });
   }, []);
 
+  // Export data (uses cached query data)
+  const { data: adData } = useAdvertising(effectiveDateRange.start, effectiveDateRange.end);
+  const { data: unifiedProducts } = useUnifiedProducts(effectiveDateRange.start, effectiveDateRange.end);
+  const { data: shopifyApiProducts } = useProducts(effectiveDateRange.start, effectiveDateRange.end, "shopify_dtc");
+  const { data: faireApiProducts } = useProducts(effectiveDateRange.start, effectiveDateRange.end, "faire");
+
   const handleExport = useCallback(() => {
     if (activeTab === "advertising") {
-      const adData = getAdSummaryForRange(dateRange.start, dateRange.end);
-      if (adData.hasData) {
+      if (adData?.hasData) {
         exportAdCsv(adData.asinBreakdown, "neurogan-ad-performance.csv");
       }
     } else if (activeTab === "overview") {
-      const prods = getUnifiedProducts(dateRange.start, dateRange.end);
-      exportOverviewCsv(prods, "neurogan-overview-export.csv");
+      if (unifiedProducts) {
+        exportOverviewCsv(unifiedProducts, "neurogan-overview-export.csv");
+      }
     } else if (activeTab === "shopify") {
-      const prods = aggregateShopifyProducts("shopify_dtc", dateRange.start, dateRange.end);
-      exportShopifyCsv(prods, "shopify_dtc", "neurogan-shopify-export.csv");
+      if (shopifyApiProducts) {
+        const prods = apiProductsToShopifyAggregates(shopifyApiProducts, "shopify_dtc");
+        exportShopifyCsv(prods, "shopify_dtc", "neurogan-shopify-export.csv");
+      }
     } else if (activeTab === "faire") {
-      const prods = aggregateShopifyProducts("faire", dateRange.start, dateRange.end);
-      exportShopifyCsv(prods, "faire", "neurogan-faire-export.csv");
+      if (faireApiProducts) {
+        const prods = apiProductsToShopifyAggregates(faireApiProducts, "faire");
+        exportShopifyCsv(prods, "faire", "neurogan-faire-export.csv");
+      }
     } else {
       exportProfitabilityCsv(sortedProducts, "neurogan-amazon-pl-export.csv");
     }
-  }, [activeTab, sortedProducts, dateRange]);
+  }, [activeTab, sortedProducts, adData, unifiedProducts, shopifyApiProducts, faireApiProducts]);
 
   const selectedProduct = useMemo(() => {
     if (!selectedAsin) return null;
     return products.find((p) => p.asin === selectedAsin) ?? null;
   }, [selectedAsin, products]);
+
+  if (metaLoading || !minDate) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 p-8">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-4 w-48" />
+        <div className="flex gap-2 mt-4">
+          <Skeleton className="h-10 w-24" />
+          <Skeleton className="h-10 w-24" />
+          <Skeleton className="h-10 w-24" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -154,23 +201,23 @@ export default function Dashboard() {
           {/* Tab 1: Overview */}
           <TabsContent value="overview" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <OverviewTab dateRange={dateRange} />
+            <OverviewTab dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 2: Amazon */}
           <TabsContent value="amazon" className="space-y-4">
             <HeroChart selectedAsins={chartSelectedAsins} />
-            <KpiCards dateRange={dateRange} />
+            <KpiCards dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
             <ProductTable
               products={sortedProducts}
@@ -182,11 +229,13 @@ export default function Dashboard() {
               onSelectProduct={setSelectedAsin}
               chartSelectedAsins={chartSelectedAsins}
               onToggleChartAsin={handleToggleChartAsin}
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
+              minDate={minDate}
+              maxDate={maxDate}
             />
             <ProductDetailDrawer
               product={selectedProduct}
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onClose={() => setSelectedAsin(null)}
               open={!!selectedProduct}
             />
@@ -195,45 +244,45 @@ export default function Dashboard() {
           {/* Tab 3: Shopify */}
           <TabsContent value="shopify" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ChannelTab channel="shopify_dtc" dateRange={dateRange} />
+            <ChannelTab channel="shopify_dtc" dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 4: Faire/Wholesale */}
           <TabsContent value="faire" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ChannelTab channel="faire" dateRange={dateRange} />
+            <ChannelTab channel="faire" dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 5: Advertising */}
           <TabsContent value="advertising" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <AdvertisingTab dateRange={dateRange} />
+            <AdvertisingTab dateRange={effectiveDateRange} />
           </TabsContent>
 
           {/* Tab 6: Pareto Analysis */}
           <TabsContent value="pareto" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ParetoTab dateRange={dateRange} />
+            <ParetoTab dateRange={effectiveDateRange} />
           </TabsContent>
 
           {/* Tab 7: Subscribe & Save */}
@@ -252,12 +301,12 @@ export default function Dashboard() {
                 Data Sources
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground/80">
-                <span>Amazon: {data.meta.salesDataSource}</span>
+                <span>Amazon: {metaObj?.salesDataSource ?? "SP-API"}</span>
                 <span>Shopify DTC: Shopify Admin API</span>
                 <span>Faire: Faire Orders API</span>
-                <span>{data.meta.adDataSource}</span>
-                <span>{data.meta.cogsDataSource}</span>
-                {data.meta.feeDataSource && <span>Fees: {data.meta.feeDataSource}</span>}
+                <span>{metaObj?.adDataSource ?? ""}</span>
+                <span>{metaObj?.cogsDataSource ?? ""}</span>
+                {metaObj?.feeDataSource && <span>Fees: {metaObj.feeDataSource}</span>}
               </div>
             </div>
             <PerplexityAttribution />

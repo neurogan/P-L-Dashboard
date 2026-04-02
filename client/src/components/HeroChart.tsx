@@ -11,22 +11,49 @@ import {
   Legend,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { data, formatCurrency, formatWeekLabel, getProductColor, getProductWeeklyRevenue } from "@/lib/data";
+import { Skeleton } from "@/components/ui/skeleton";
+import { formatCurrency, formatWeekLabel, getProductColor } from "@/lib/data";
+import { useHeroChart, useProductWeeklyRevenue, useProductsCatalog } from "@/lib/api";
 
 interface Props {
   selectedAsins: string[];
 }
 
 export function HeroChart({ selectedAsins }: Props) {
-  const chartData = useMemo(() => {
-    const hero = data.heroChartData;
-    const slice = hero.slice(-52);
+  const { data: heroChartData, isLoading: heroLoading } = useHeroChart();
+  const { data: catalogProducts, isLoading: catalogLoading } = useProductsCatalog();
 
-    // Pre-compute per-product weekly revenue maps for selected ASINs
-    const productMaps = selectedAsins.map((asin) => ({
-      asin,
-      map: getProductWeeklyRevenue(asin),
-    }));
+  // Fixed 5 hook calls for per-ASIN weekly revenue (hooks can't be called conditionally)
+  const asin0 = selectedAsins[0] ?? null;
+  const asin1 = selectedAsins[1] ?? null;
+  const asin2 = selectedAsins[2] ?? null;
+  const asin3 = selectedAsins[3] ?? null;
+  const asin4 = selectedAsins[4] ?? null;
+
+  const { data: rev0 } = useProductWeeklyRevenue(asin0);
+  const { data: rev1 } = useProductWeeklyRevenue(asin1);
+  const { data: rev2 } = useProductWeeklyRevenue(asin2);
+  const { data: rev3 } = useProductWeeklyRevenue(asin3);
+  const { data: rev4 } = useProductWeeklyRevenue(asin4);
+
+  const productRevMaps = useMemo(() => {
+    const maps: Record<string, number>[] = [rev0, rev1, rev2, rev3, rev4].map(
+      (r) => r ?? {},
+    );
+    return maps;
+  }, [rev0, rev1, rev2, rev3, rev4]);
+
+  // Build a product list for getProductColor from catalog data
+  const productList = useMemo(() => {
+    if (!catalogProducts) return undefined;
+    return catalogProducts
+      .filter((p) => p.asin != null)
+      .map((p) => ({ asin: p.asin as string }));
+  }, [catalogProducts]);
+
+  const chartData = useMemo(() => {
+    if (!heroChartData) return [];
+    const slice = heroChartData.slice(-52);
 
     return slice.map((row) => {
       const entry: any = {
@@ -34,13 +61,15 @@ export function HeroChart({ selectedAsins }: Props) {
         rawWeek: row.week,
         totalRevenue: row.revenue,
         netProfit: row.netProfit,
-        feeSource: row.feeSource,
+        feeSource: (row as any).feeSource,
       };
 
       if (selectedAsins.length > 0) {
         let selectedTotal = 0;
-        for (const { asin, map } of productMaps) {
-          const val = map.get(row.week) ?? 0;
+        for (let i = 0; i < selectedAsins.length; i++) {
+          const asin = selectedAsins[i];
+          const revMap = productRevMaps[i];
+          const val = revMap[row.week] ?? 0;
           entry[`product_${asin}`] = val;
           selectedTotal += val;
         }
@@ -51,18 +80,39 @@ export function HeroChart({ selectedAsins }: Props) {
 
       return entry;
     });
-  }, [selectedAsins]);
+  }, [heroChartData, selectedAsins, productRevMaps]);
 
-  // Build product names lookup
+  // Build product names lookup from catalog
   const productNames = useMemo(() => {
     const map = new Map<string, string>();
-    for (const p of data.products) {
-      map.set(p.asin, p.productTitle.length > 35 ? p.productTitle.slice(0, 35) + "…" : p.productTitle);
+    if (!catalogProducts) return map;
+    for (const p of catalogProducts) {
+      if (p.asin) {
+        map.set(p.asin, p.productTitle.length > 35 ? p.productTitle.slice(0, 35) + "\u2026" : p.productTitle);
+      }
     }
     return map;
-  }, []);
+  }, [catalogProducts]);
 
   const hasSelectedProducts = selectedAsins.length > 0;
+  const isLoading = heroLoading || catalogLoading;
+
+  if (isLoading) {
+    return (
+      <Card data-testid="hero-chart-card">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Revenue vs. Net Profit — Trailing 52 Weeks
+            </CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent className="px-2 pb-3">
+          <Skeleton className="w-full h-[320px]" />
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card data-testid="hero-chart-card">
@@ -123,12 +173,12 @@ export function HeroChart({ selectedAsins }: Props) {
                       Total Revenue: {formatCurrency(d?.totalRevenue)}
                     </p>
                     {hasSelectedProducts && selectedAsins.map((asin) => (
-                      <p key={asin} className="tabular-nums" style={{ color: getProductColor(asin) }}>
+                      <p key={asin} className="tabular-nums" style={{ color: getProductColor(asin, productList) }}>
                         {productNames.get(asin) ?? asin}: {formatCurrency(d?.[`product_${asin}`])}
                       </p>
                     ))}
                     <p className="tabular-nums text-emerald-500">
-                      Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "—"}
+                      Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "\u2014"}
                       {d?.feeSource === "estimated" && <span className="ml-1 text-amber-500" title="Estimated fees">~</span>}
                     </p>
                   </div>
@@ -175,7 +225,7 @@ export function HeroChart({ selectedAsins }: Props) {
                     key={asin}
                     yAxisId="left"
                     dataKey={`product_${asin}`}
-                    fill={getProductColor(asin)}
+                    fill={getProductColor(asin, productList)}
                     fillOpacity={0.9}
                     name={`product_${asin}`}
                     stackId="rev"

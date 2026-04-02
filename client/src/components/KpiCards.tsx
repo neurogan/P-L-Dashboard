@@ -1,29 +1,102 @@
 import { useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   TrendingUp, TrendingDown, DollarSign, Package, Receipt, Wallet, PiggyBank, Percent,
 } from "lucide-react";
+import { useProducts } from "@/lib/api";
+import type { ApiProductRow } from "@/lib/api";
 import {
-  getDynamicAmazonKpis, detectPreset, data,
-  formatCurrency, formatNumber, formatPercent, DatePreset,
+  detectPreset, getPriorPeriod, safePctChange,
+  formatCurrency, formatNumber, formatPercent,
 } from "@/lib/data";
 
 interface Props {
   dateRange: { start: string; end: string };
+  minDate: string;
+  maxDate: string;
 }
 
-export function KpiCards({ dateRange }: Props) {
+/** Sum Amazon product rows into aggregate KPIs. */
+function sumAmazonProducts(rows: ApiProductRow[]) {
+  let revenue = 0;
+  let totalAmazonFees: number | null = null;
+  let netProceeds: number | null = null;
+  let netProfit: number | null = null;
+  let unitsSold = 0;
+
+  for (const r of rows) {
+    revenue += r.revenue;
+    unitsSold += r.unitsSold;
+    if (r.totalAmazonFees != null) totalAmazonFees = (totalAmazonFees ?? 0) + r.totalAmazonFees;
+    if (r.netProceeds != null) netProceeds = (netProceeds ?? 0) + r.netProceeds;
+    if (r.netProfit != null) netProfit = (netProfit ?? 0) + r.netProfit;
+  }
+
+  const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
+  return { revenue, totalAmazonFees, netProceeds, netProfit, unitsSold, marginPct };
+}
+
+export function KpiCards({ dateRange, minDate, maxDate }: Props) {
   const preset = useMemo(
-    () => detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest),
-    [dateRange]
+    () => detectPreset(dateRange, minDate, maxDate),
+    [dateRange, minDate, maxDate],
   );
 
-  const kpis = useMemo(
-    () => getDynamicAmazonKpis(dateRange, preset),
-    [dateRange, preset]
+  const prior = useMemo(() => getPriorPeriod(dateRange, preset), [dateRange, preset]);
+
+  // Current period Amazon products
+  const { data: currentProducts, isLoading: currentLoading } = useProducts(
+    dateRange.start,
+    dateRange.end,
+    "amazon",
+  );
+
+  // Prior period Amazon products (only when comparison is relevant)
+  const { data: priorProducts, isLoading: priorLoading } = useProducts(
+    prior?.start,
+    prior?.end,
+    prior ? "amazon" : undefined,
   );
 
   const hideChange = preset === "All";
+  const isLoading = currentLoading || (!hideChange && prior != null && priorLoading);
+
+  const kpis = useMemo(() => {
+    if (!currentProducts) return null;
+
+    const curr = sumAmazonProducts(currentProducts);
+    const prev = priorProducts ? sumAmazonProducts(priorProducts) : null;
+
+    return {
+      ...curr,
+      revenueChange: prev ? safePctChange(curr.revenue, prev.revenue) : null,
+      feesChange: prev ? safePctChange(curr.totalAmazonFees, prev.totalAmazonFees) : null,
+      netProceedsChange: prev ? safePctChange(curr.netProceeds, prev.netProceeds) : null,
+      netProfitChange: prev ? safePctChange(curr.netProfit, prev.netProfit) : null,
+      unitsSoldChange: prev ? safePctChange(curr.unitsSold, prev.unitsSold) : null,
+      comparisonLabel: prior?.label ?? null,
+    };
+  }, [currentProducts, priorProducts, prior]);
+
+  if (isLoading || !kpis) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" data-testid="kpi-cards">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i} className="relative overflow-hidden">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-4 w-4 rounded" />
+              </div>
+              <Skeleton className="h-6 w-24 mb-1" />
+              <Skeleton className="h-3 w-20" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
 
   const cards = [
     { label: "Revenue", value: formatCurrency(kpis.revenue), change: kpis.revenueChange, icon: DollarSign, testId: "kpi-revenue", invertColor: false },
@@ -31,7 +104,7 @@ export function KpiCards({ dateRange }: Props) {
     { label: "Net Proceeds", value: formatCurrency(kpis.netProceeds), change: kpis.netProceedsChange, icon: Wallet, testId: "kpi-net-proceeds", invertColor: false },
     { label: "Net Profit", value: formatCurrency(kpis.netProfit), change: kpis.netProfitChange, icon: PiggyBank, testId: "kpi-net-profit", invertColor: false },
     { label: "Units Sold", value: formatNumber(kpis.unitsSold), change: kpis.unitsSoldChange, icon: Package, testId: "kpi-units-sold", invertColor: false },
-    { label: "Margin %", value: kpis.marginPct != null ? formatPercent(kpis.marginPct) : "—", change: null, icon: Percent, testId: "kpi-margin", invertColor: false },
+    { label: "Margin %", value: kpis.marginPct != null ? formatPercent(kpis.marginPct) : "\u2014", change: null, icon: Percent, testId: "kpi-margin", invertColor: false },
   ];
 
   return (

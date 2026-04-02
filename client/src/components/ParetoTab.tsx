@@ -4,13 +4,13 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie, ReferenceLine,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { usePareto, type ParetoProduct } from "@/lib/api";
 import {
-  getParetoData,
   calculateGiniCoefficient,
   formatCurrency,
   formatPercent,
   formatNumber,
-  ParetoProduct,
 } from "@/lib/data";
 
 interface Props {
@@ -19,7 +19,7 @@ interface Props {
 
 function truncate(str: string, len: number) {
   if (str.length <= len) return str;
-  return str.slice(0, len) + "…";
+  return str.slice(0, len) + "\u2026";
 }
 
 const BRIGHT_COLOR = "#3b82f6";
@@ -28,14 +28,74 @@ const BRIGHT_PROFIT = "#22c55e";
 const MUTED_PROFIT = "#6b7280";
 const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#94a3b8"];
 
-export function ParetoTab({ dateRange }: Props) {
-  const rawProducts = useMemo(
-    () => getParetoData(dateRange.start, dateRange.end),
-    [dateRange]
+function ParetoSkeleton() {
+  return (
+    <div className="space-y-6" data-testid="pareto-tab-skeleton">
+      {/* Summary Cards skeleton */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent className="p-4">
+              <Skeleton className="h-3 w-32 mb-2" />
+              <Skeleton className="h-6 w-16 mb-2" />
+              <Skeleton className="h-2 w-full rounded-full" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Revenue Pareto Chart skeleton */}
+      <Card>
+        <CardHeader className="pb-2 pt-4 px-4">
+          <Skeleton className="h-4 w-40 mb-1" />
+          <Skeleton className="h-3 w-52" />
+        </CardHeader>
+        <CardContent className="px-2 pb-3">
+          <Skeleton className="w-full h-[400px]" />
+        </CardContent>
+      </Card>
+
+      {/* Profit Pareto Chart skeleton */}
+      <Card>
+        <CardHeader className="pb-2 pt-4 px-4">
+          <Skeleton className="h-4 w-36 mb-1" />
+          <Skeleton className="h-3 w-48" />
+        </CardHeader>
+        <CardContent className="px-2 pb-3">
+          <Skeleton className="w-full h-[400px]" />
+        </CardContent>
+      </Card>
+
+      {/* Donut chart skeleton */}
+      <Card>
+        <CardHeader className="pb-2 pt-4 px-4">
+          <Skeleton className="h-4 w-56" />
+        </CardHeader>
+        <CardContent className="pb-4">
+          <div className="flex items-center gap-6 flex-wrap">
+            <Skeleton className="w-[280px] h-[280px] rounded-full" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Skeleton className="w-3 h-3 rounded-sm" />
+                  <Skeleton className="h-3 w-32" />
+                  <Skeleton className="h-3 w-16 ml-auto" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
+}
+
+export function ParetoTab({ dateRange }: Props) {
+  const { data: rawProducts, isLoading } = usePareto(dateRange.start, dateRange.end);
 
   // Revenue Pareto
   const revenueSorted = useMemo(() => {
+    if (!rawProducts) return [];
     const sorted = [...rawProducts].filter((p) => p.revenue > 0).sort((a, b) => b.revenue - a.revenue);
     const total = sorted.reduce((s, p) => s + p.revenue, 0);
     let cumulative = 0;
@@ -52,6 +112,7 @@ export function ParetoTab({ dateRange }: Props) {
 
   // Profit Pareto (only hasCogs products)
   const profitSorted = useMemo(() => {
+    if (!rawProducts) return [];
     const withCogs = rawProducts.filter((p) => p.hasCogs && p.netProfit != null && p.netProfit > 0);
     const sorted = [...withCogs].sort((a, b) => (b.netProfit ?? 0) - (a.netProfit ?? 0));
     const total = sorted.reduce((s, p) => s + (p.netProfit ?? 0), 0);
@@ -98,6 +159,10 @@ export function ParetoTab({ dateRange }: Props) {
   const revChartData = revenueSorted.slice(0, 30);
   const profitChartData = profitSorted.slice(0, 30);
 
+  if (isLoading) {
+    return <ParetoSkeleton />;
+  }
+
   return (
     <div className="space-y-6" data-testid="pareto-tab">
       {/* Summary Cards */}
@@ -138,7 +203,7 @@ export function ParetoTab({ dateRange }: Props) {
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground mb-1">Top product</p>
             <p className="text-sm font-medium leading-tight truncate" title={topProduct?.productTitle}>
-              {topProduct ? truncate(topProduct.productTitle, 40) : "—"}
+              {topProduct ? truncate(topProduct.productTitle, 40) : "\u2014"}
             </p>
             <p className="text-lg font-semibold tabular-nums mt-1">
               {formatPercent(topProductPct)} <span className="text-xs text-muted-foreground font-normal">of total revenue</span>

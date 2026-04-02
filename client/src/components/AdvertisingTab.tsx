@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowUpDown,
   ArrowUp,
@@ -36,13 +37,12 @@ import {
   ShoppingCart,
   Info,
 } from "lucide-react";
+import { useAdvertising } from "@/lib/api";
 import {
-  getAdSummaryForRange,
   formatCurrency,
   formatCurrencyPrecise,
   formatNumber,
   formatPercent,
-  AdAsinAggregate,
 } from "@/lib/data";
 
 interface Props {
@@ -60,7 +60,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
 
 function truncate(str: string, len: number) {
   if (str.length <= len) return str;
-  return str.slice(0, len) + "…";
+  return str.slice(0, len) + "\u2026";
 }
 
 function acosColor(acos: number): string {
@@ -128,16 +128,96 @@ const adColumns = [
   { key: "orders", label: "Ad Orders", align: "right" as const },
 ];
 
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-4" data-testid="advertising-tab-loading">
+      {/* KPI skeleton */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent className="p-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-3.5 w-3.5 rounded" />
+              </div>
+              <Skeleton className="h-5 w-20 mt-1" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Chart skeleton */}
+      <Card>
+        <CardHeader className="pb-2 pt-4 px-4">
+          <Skeleton className="h-4 w-48" />
+        </CardHeader>
+        <CardContent className="px-2 pb-3">
+          <Skeleton className="w-full h-[260px]" />
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Table skeleton */}
+        <div className="lg:col-span-2">
+          <Card>
+            <CardHeader className="pb-2 pt-4 px-4">
+              <Skeleton className="h-4 w-56" />
+            </CardHeader>
+            <CardContent className="px-4 pb-4 space-y-3">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-4 w-16 ml-auto" />
+                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-12" />
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Pie chart skeleton */}
+        <div>
+          <Card>
+            <CardHeader className="pb-2 pt-4 px-4">
+              <Skeleton className="h-4 w-44" />
+            </CardHeader>
+            <CardContent className="px-2 pb-3 flex items-center justify-center">
+              <Skeleton className="w-[200px] h-[200px] rounded-full" />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AdvertisingTab({ dateRange }: Props) {
   const [sortKey, setSortKey] = useState("spend");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const adData = useMemo(
-    () => getAdSummaryForRange(dateRange.start, dateRange.end),
-    [dateRange]
-  );
+  const { data: adData, isLoading } = useAdvertising(dateRange.start, dateRange.end);
+
+  // Transform weekly data: API returns `week` (e.g. "2026-01-19"), add `weekLabel` for chart display
+  const weeklyChartData = useMemo(() => {
+    if (!adData?.weeklyData) return [];
+    return adData.weeklyData.map((w) => ({
+      ...w,
+      weekLabel: new Date(w.week + "T00:00:00").toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      }),
+    }));
+  }, [adData?.weeklyData]);
 
   const sortedAsins = useMemo(() => {
+    if (!adData?.asinBreakdown) return [];
     return [...adData.asinBreakdown].sort((a, b) => {
       const aVal = (a as any)[sortKey] ?? 0;
       const bVal = (b as any)[sortKey] ?? 0;
@@ -148,7 +228,7 @@ export function AdvertisingTab({ dateRange }: Props) {
       }
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
-  }, [adData.asinBreakdown, sortKey, sortDir]);
+  }, [adData?.asinBreakdown, sortKey, sortDir]);
 
   const handleSort = useCallback(
     (key: string) => {
@@ -164,6 +244,7 @@ export function AdvertisingTab({ dateRange }: Props) {
 
   // Pie chart data: top 10 by spend, rest as "Other"
   const pieData = useMemo(() => {
+    if (!adData?.asinBreakdown) return [];
     const sorted = [...adData.asinBreakdown].sort(
       (a, b) => b.spend - a.spend
     );
@@ -180,10 +261,13 @@ export function AdvertisingTab({ dateRange }: Props) {
       });
     }
     return items;
-  }, [adData.asinBreakdown]);
+  }, [adData?.asinBreakdown]);
 
   // Totals for the table
   const tableTotals = useMemo(() => {
+    if (!adData?.asinBreakdown) {
+      return { spend: 0, adSales: 0, impressions: 0, clicks: 0, orders: 0, totalRevenue: 0, acos: 0, tacos: 0, ctr: 0, cpc: 0 };
+    }
     const t = adData.asinBreakdown.reduce(
       (acc, a) => ({
         spend: acc.spend + a.spend,
@@ -202,10 +286,15 @@ export function AdvertisingTab({ dateRange }: Props) {
       ctr: t.impressions > 0 ? t.clicks / t.impressions : 0,
       cpc: t.clicks > 0 ? t.spend / t.clicks : 0,
     };
-  }, [adData.asinBreakdown]);
+  }, [adData?.asinBreakdown]);
+
+  // Loading state
+  if (isLoading) {
+    return <LoadingSkeleton />;
+  }
 
   // Empty state
-  if (!adData.hasData) {
+  if (!adData?.hasData) {
     return (
       <Card
         className="border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-950/30"
@@ -312,7 +401,7 @@ export function AdvertisingTab({ dateRange }: Props) {
         <CardContent className="px-2 pb-3">
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart
-              data={adData.weeklyData}
+              data={weeklyChartData}
               margin={{ top: 5, right: 10, left: 10, bottom: 5 }}
             >
               <CartesianGrid
