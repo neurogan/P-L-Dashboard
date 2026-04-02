@@ -721,6 +721,23 @@ export async function registerRoutes(
     res.json(result);
   });
 
+  // ─── POST /api/sync — Run data ingestion for a date range ──────────────
+
+  app.post("/api/sync", async (req, res) => {
+    const { startDate, endDate } = req.body as { startDate?: string; endDate?: string };
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: "startDate and endDate are required" });
+    }
+
+    try {
+      const { syncAll } = await import("./ingestion/index");
+      const results = await syncAll(startDate, endDate);
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ error: `Sync failed: ${err.message}` });
+    }
+  });
+
   // ─── GET /api/cogs-periods — COGS data ──────────────────────────────────
 
   app.get("/api/cogs-periods", async (req, res) => {
