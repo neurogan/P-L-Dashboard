@@ -4,9 +4,8 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie, ReferenceLine,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { usePareto, type ParetoProduct } from "@/lib/api";
 import {
+  usePareto,
   calculateGiniCoefficient,
   formatCurrency,
   formatPercent,
@@ -19,7 +18,7 @@ interface Props {
 
 function truncate(str: string, len: number) {
   if (str.length <= len) return str;
-  return str.slice(0, len) + "\u2026";
+  return str.slice(0, len) + "…";
 }
 
 const BRIGHT_COLOR = "#3b82f6";
@@ -28,74 +27,10 @@ const BRIGHT_PROFIT = "#22c55e";
 const MUTED_PROFIT = "#6b7280";
 const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#94a3b8"];
 
-function ParetoSkeleton() {
-  return (
-    <div className="space-y-6" data-testid="pareto-tab-skeleton">
-      {/* Summary Cards skeleton */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Card key={i}>
-            <CardContent className="p-4">
-              <Skeleton className="h-3 w-32 mb-2" />
-              <Skeleton className="h-6 w-16 mb-2" />
-              <Skeleton className="h-2 w-full rounded-full" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Revenue Pareto Chart skeleton */}
-      <Card>
-        <CardHeader className="pb-2 pt-4 px-4">
-          <Skeleton className="h-4 w-40 mb-1" />
-          <Skeleton className="h-3 w-52" />
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          <Skeleton className="w-full h-[400px]" />
-        </CardContent>
-      </Card>
-
-      {/* Profit Pareto Chart skeleton */}
-      <Card>
-        <CardHeader className="pb-2 pt-4 px-4">
-          <Skeleton className="h-4 w-36 mb-1" />
-          <Skeleton className="h-3 w-48" />
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          <Skeleton className="w-full h-[400px]" />
-        </CardContent>
-      </Card>
-
-      {/* Donut chart skeleton */}
-      <Card>
-        <CardHeader className="pb-2 pt-4 px-4">
-          <Skeleton className="h-4 w-56" />
-        </CardHeader>
-        <CardContent className="pb-4">
-          <div className="flex items-center gap-6 flex-wrap">
-            <Skeleton className="w-[280px] h-[280px] rounded-full" />
-            <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Skeleton className="w-3 h-3 rounded-sm" />
-                  <Skeleton className="h-3 w-32" />
-                  <Skeleton className="h-3 w-16 ml-auto" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 export function ParetoTab({ dateRange }: Props) {
-  const { data: rawProducts, isLoading } = usePareto(dateRange.start, dateRange.end);
+  const { data: rawProducts = [], isLoading } = usePareto(dateRange.start, dateRange.end);
 
-  // Revenue Pareto
   const revenueSorted = useMemo(() => {
-    if (!rawProducts) return [];
     const sorted = [...rawProducts].filter((p) => p.revenue > 0).sort((a, b) => b.revenue - a.revenue);
     const total = sorted.reduce((s, p) => s + p.revenue, 0);
     let cumulative = 0;
@@ -110,9 +45,7 @@ export function ParetoTab({ dateRange }: Props) {
     return idx >= 0 ? idx + 1 : revenueSorted.length;
   }, [revenueSorted]);
 
-  // Profit Pareto (only hasCogs products)
   const profitSorted = useMemo(() => {
-    if (!rawProducts) return [];
     const withCogs = rawProducts.filter((p) => p.hasCogs && p.netProfit != null && p.netProfit > 0);
     const sorted = [...withCogs].sort((a, b) => (b.netProfit ?? 0) - (a.netProfit ?? 0));
     const total = sorted.reduce((s, p) => s + (p.netProfit ?? 0), 0);
@@ -131,17 +64,14 @@ export function ParetoTab({ dateRange }: Props) {
   const totalRevenue = revenueSorted.reduce((s, p) => s + p.revenue, 0);
   const totalProfit = profitSorted.reduce((s, p) => s + (p.netProfit ?? 0), 0);
 
-  // Gini
   const giniRevenue = useMemo(
     () => calculateGiniCoefficient(revenueSorted.map((p) => p.revenue)),
     [revenueSorted]
   );
 
-  // Top product
   const topProduct = revenueSorted[0];
   const topProductPct = topProduct && totalRevenue > 0 ? topProduct.revenue / totalRevenue : 0;
 
-  // Pie data
   const pieData = useMemo(() => {
     const top5 = revenueSorted.slice(0, 5).map((p) => ({
       name: truncate(p.productTitle, 30),
@@ -155,12 +85,19 @@ export function ParetoTab({ dateRange }: Props) {
     return top5;
   }, [revenueSorted]);
 
-  // Limit bar charts to top 30 for readability
   const revChartData = revenueSorted.slice(0, 30);
   const profitChartData = profitSorted.slice(0, 30);
 
   if (isLoading) {
-    return <ParetoSkeleton />;
+    return (
+      <div className="space-y-6" data-testid="pareto-tab">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i}><CardContent className="p-4 h-[100px] animate-pulse" /></Card>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -203,7 +140,7 @@ export function ParetoTab({ dateRange }: Props) {
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground mb-1">Top product</p>
             <p className="text-sm font-medium leading-tight truncate" title={topProduct?.productTitle}>
-              {topProduct ? truncate(topProduct.productTitle, 40) : "\u2014"}
+              {topProduct ? truncate(topProduct.productTitle, 40) : "—"}
             </p>
             <p className="text-lg font-semibold tabular-nums mt-1">
               {formatPercent(topProductPct)} <span className="text-xs text-muted-foreground font-normal">of total revenue</span>
@@ -225,62 +162,27 @@ export function ParetoTab({ dateRange }: Props) {
       {/* Revenue Pareto Chart */}
       <Card data-testid="pareto-revenue-chart">
         <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Revenue Concentration
-          </CardTitle>
-          <p className="text-[10px] text-muted-foreground">
-            {revenueProducts80} products drive 80% of revenue
-          </p>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Revenue Concentration</CardTitle>
+          <p className="text-[10px] text-muted-foreground">{revenueProducts80} products drive 80% of revenue</p>
         </CardHeader>
         <CardContent className="px-2 pb-3">
           <ResponsiveContainer width="100%" height={400}>
-            <ComposedChart
-              data={revChartData}
-              margin={{ top: 10, right: 40, left: 10, bottom: 80 }}
-            >
+            <ComposedChart data={revChartData} margin={{ top: 10, right: 40, left: 10, bottom: 80 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-              <XAxis
-                dataKey="productTitle"
-                tick={{ fontSize: 8, fill: "hsl(var(--muted-foreground))" }}
-                tickLine={false}
-                axisLine={false}
-                interval={0}
-                angle={-45}
-                textAnchor="end"
-                height={80}
-                tickFormatter={(v) => truncate(v, 20)}
-              />
-              <YAxis
-                yAxisId="left"
-                tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                tickFormatter={(v) => formatCurrency(v, true)}
-                tickLine={false}
-                axisLine={false}
-                width={60}
-              />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                tickLine={false}
-                axisLine={false}
-                width={40}
-                domain={[0, 1]}
-              />
-              <Tooltip
-                content={({ active, payload }) => {
-                  if (!active || !payload?.length) return null;
-                  const d = payload[0]?.payload;
-                  return (
-                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
-                      <p className="font-medium mb-1 text-foreground">{d?.productTitle}</p>
-                      <p className="tabular-nums">Revenue: {formatCurrency(d?.revenue)}</p>
-                      <p className="tabular-nums">Cumulative: {formatPercent(d?.cumPct)}</p>
-                    </div>
-                  );
-                }}
-              />
+              <XAxis dataKey="productTitle" tick={{ fontSize: 8, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval={0} angle={-45} textAnchor="end" height={80} tickFormatter={(v) => truncate(v, 20)} />
+              <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} tickLine={false} axisLine={false} width={40} domain={[0, 1]} />
+              <Tooltip content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0]?.payload;
+                return (
+                  <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
+                    <p className="font-medium mb-1 text-foreground">{d?.productTitle}</p>
+                    <p className="tabular-nums">Revenue: {formatCurrency(d?.revenue)}</p>
+                    <p className="tabular-nums">Cumulative: {formatPercent(d?.cumPct)}</p>
+                  </div>
+                );
+              }} />
               <ReferenceLine yAxisId="right" y={0.8} stroke="#ef4444" strokeDasharray="6 4" strokeWidth={1.5} label={{ value: "80%", position: "right", fill: "#ef4444", fontSize: 10 }} />
               <Bar yAxisId="left" dataKey="revenue" name="Revenue" radius={[2, 2, 0, 0]}>
                 {revChartData.map((entry, idx) => (
@@ -296,63 +198,28 @@ export function ParetoTab({ dateRange }: Props) {
       {/* Profit Pareto Chart */}
       <Card data-testid="pareto-profit-chart">
         <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Profit Concentration
-          </CardTitle>
-          <p className="text-[10px] text-muted-foreground">
-            {profitProducts80} products drive 80% of net profit
-          </p>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Profit Concentration</CardTitle>
+          <p className="text-[10px] text-muted-foreground">{profitProducts80} products drive 80% of net profit</p>
         </CardHeader>
         <CardContent className="px-2 pb-3">
           {profitSorted.length > 0 ? (
             <ResponsiveContainer width="100%" height={400}>
-              <ComposedChart
-                data={profitChartData}
-                margin={{ top: 10, right: 40, left: 10, bottom: 80 }}
-              >
+              <ComposedChart data={profitChartData} margin={{ top: 10, right: 40, left: 10, bottom: 80 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                <XAxis
-                  dataKey="productTitle"
-                  tick={{ fontSize: 8, fill: "hsl(var(--muted-foreground))" }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval={0}
-                  angle={-45}
-                  textAnchor="end"
-                  height={80}
-                  tickFormatter={(v) => truncate(v, 20)}
-                />
-                <YAxis
-                  yAxisId="left"
-                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                  tickFormatter={(v) => formatCurrency(v, true)}
-                  tickLine={false}
-                  axisLine={false}
-                  width={60}
-                />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                  tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                  tickLine={false}
-                  axisLine={false}
-                  width={40}
-                  domain={[0, 1]}
-                />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0]?.payload;
-                    return (
-                      <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
-                        <p className="font-medium mb-1 text-foreground">{d?.productTitle}</p>
-                        <p className="tabular-nums">Net Profit: {formatCurrency(d?.netProfit)}</p>
-                        <p className="tabular-nums">Cumulative: {formatPercent(d?.cumPct)}</p>
-                      </div>
-                    );
-                  }}
-                />
+                <XAxis dataKey="productTitle" tick={{ fontSize: 8, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval={0} angle={-45} textAnchor="end" height={80} tickFormatter={(v) => truncate(v, 20)} />
+                <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} tickLine={false} axisLine={false} width={40} domain={[0, 1]} />
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0]?.payload;
+                  return (
+                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
+                      <p className="font-medium mb-1 text-foreground">{d?.productTitle}</p>
+                      <p className="tabular-nums">Net Profit: {formatCurrency(d?.netProfit)}</p>
+                      <p className="tabular-nums">Cumulative: {formatPercent(d?.cumPct)}</p>
+                    </div>
+                  );
+                }} />
                 <ReferenceLine yAxisId="right" y={0.8} stroke="#ef4444" strokeDasharray="6 4" strokeWidth={1.5} label={{ value: "80%", position: "right", fill: "#ef4444", fontSize: 10 }} />
                 <Bar yAxisId="left" dataKey="netProfit" name="Net Profit" radius={[2, 2, 0, 0]}>
                   {profitChartData.map((entry, idx) => (
@@ -373,9 +240,7 @@ export function ParetoTab({ dateRange }: Props) {
       {/* Revenue Distribution Donut */}
       <Card data-testid="pareto-donut-chart">
         <CardHeader className="pb-2 pt-4 px-4">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Revenue Distribution — Top 5 Products
-          </CardTitle>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Revenue Distribution — Top 5 Products</CardTitle>
         </CardHeader>
         <CardContent className="pb-4">
           <div className="flex items-center gap-6 flex-wrap">
@@ -396,18 +261,16 @@ export function ParetoTab({ dateRange }: Props) {
                     <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0];
-                    return (
-                      <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
-                        <p className="font-medium mb-1 text-foreground">{d?.name}</p>
-                        <p className="tabular-nums">{formatCurrency(d?.value as number)}</p>
-                      </div>
-                    );
-                  }}
-                />
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0];
+                  return (
+                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
+                      <p className="font-medium mb-1 text-foreground">{d?.name}</p>
+                      <p className="tabular-nums">{formatCurrency(d?.value as number)}</p>
+                    </div>
+                  );
+                }} />
               </PieChart>
             </ResponsiveContainer>
             <div className="space-y-2">

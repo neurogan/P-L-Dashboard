@@ -12,41 +12,35 @@ import { AdvertisingTab } from "@/components/AdvertisingTab";
 import { SubscribeSaveTab } from "@/components/SubscribeSaveTab";
 import { ParetoTab } from "@/components/ParetoTab";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   useMeta,
   useProducts,
   useAdvertising,
   useUnifiedProducts,
-} from "@/lib/api";
-import {
-  apiProductsToAggregates,
-  apiProductsToShopifyAggregates,
+  useShopifyProducts,
   getTotals,
   exportProfitabilityCsv,
   exportAdCsv,
   exportOverviewCsv,
   exportShopifyCsv,
+  ProductAggregate,
 } from "@/lib/data";
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Load metadata for date range
-  const { data: meta, isLoading: metaLoading } = useMeta();
+  // Fetch metadata (date range, data sources)
+  const { data: meta } = useMeta();
+
   const minDate = meta?.["dateRange.oldest"] ?? "";
   const maxDate = meta?.["dateRange.newest"] ?? "";
-  const metaObj = useMemo(() => {
-    if (!meta?.meta) return null;
-    try { return JSON.parse(meta.meta); } catch { return null; }
-  }, [meta]);
 
-  // Date range state — initialized once meta loads
+  // Date range state — initialized to full range once meta loads
   const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
   const effectiveDateRange = dateRange ?? { start: minDate, end: maxDate };
 
-  // Initialize date range when meta loads
-  if (!dateRange && minDate && maxDate) {
+  // If meta loaded but we haven't set the date range yet, initialize it
+  if (minDate && maxDate && !dateRange) {
     setDateRange({ start: minDate, end: maxDate });
   }
 
@@ -60,20 +54,16 @@ export default function Dashboard() {
   const [sortKey, setSortKey] = useState<string>("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  // Fetch products from API
-  const { data: apiProducts } = useProducts(
+  // Fetch Amazon products from API
+  const { data: products = [] } = useProducts(
     effectiveDateRange.start,
     effectiveDateRange.end,
     "amazon",
+    sortKey,
+    sortDir
   );
 
-  // Convert to ProductAggregate format
-  const products = useMemo(
-    () => apiProducts ? apiProductsToAggregates(apiProducts) : [],
-    [apiProducts],
-  );
-
-  // Sort Amazon products
+  // Sort Amazon products (already sorted by API, but if sortKey/dir change client-side we re-sort)
   const sortedProducts = useMemo(() => {
     const sorted = [...products].sort((a, b) => {
       const aVal = (a as any)[sortKey] ?? -Infinity;
@@ -99,7 +89,7 @@ export default function Dashboard() {
         setSortDir("desc");
       }
     },
-    [sortKey],
+    [sortKey]
   );
 
   const handleToggleChartAsin = useCallback((asin: string) => {
@@ -112,15 +102,15 @@ export default function Dashboard() {
     });
   }, []);
 
-  // Export data (uses cached query data)
+  // Fetch data needed for CSV export (lazy — only used on click)
   const { data: adData } = useAdvertising(effectiveDateRange.start, effectiveDateRange.end);
   const { data: unifiedProducts } = useUnifiedProducts(effectiveDateRange.start, effectiveDateRange.end);
-  const { data: shopifyApiProducts } = useProducts(effectiveDateRange.start, effectiveDateRange.end, "shopify_dtc");
-  const { data: faireApiProducts } = useProducts(effectiveDateRange.start, effectiveDateRange.end, "faire");
+  const { data: shopifyProds } = useShopifyProducts("shopify_dtc", effectiveDateRange.start, effectiveDateRange.end);
+  const { data: faireProds } = useShopifyProducts("faire", effectiveDateRange.start, effectiveDateRange.end);
 
   const handleExport = useCallback(() => {
     if (activeTab === "advertising") {
-      if (adData?.hasData) {
+      if (adData?.hasData && adData.asinBreakdown) {
         exportAdCsv(adData.asinBreakdown, "neurogan-ad-performance.csv");
       }
     } else if (activeTab === "overview") {
@@ -128,35 +118,33 @@ export default function Dashboard() {
         exportOverviewCsv(unifiedProducts, "neurogan-overview-export.csv");
       }
     } else if (activeTab === "shopify") {
-      if (shopifyApiProducts) {
-        const prods = apiProductsToShopifyAggregates(shopifyApiProducts, "shopify_dtc");
-        exportShopifyCsv(prods, "shopify_dtc", "neurogan-shopify-export.csv");
+      if (shopifyProds) {
+        exportShopifyCsv(shopifyProds, "shopify_dtc", "neurogan-shopify-export.csv");
       }
     } else if (activeTab === "faire") {
-      if (faireApiProducts) {
-        const prods = apiProductsToShopifyAggregates(faireApiProducts, "faire");
-        exportShopifyCsv(prods, "faire", "neurogan-faire-export.csv");
+      if (faireProds) {
+        exportShopifyCsv(faireProds, "faire", "neurogan-faire-export.csv");
       }
     } else {
       exportProfitabilityCsv(sortedProducts, "neurogan-amazon-pl-export.csv");
     }
-  }, [activeTab, sortedProducts, adData, unifiedProducts, shopifyApiProducts, faireApiProducts]);
+  }, [activeTab, sortedProducts, adData, unifiedProducts, shopifyProds, faireProds]);
 
   const selectedProduct = useMemo(() => {
     if (!selectedAsin) return null;
     return products.find((p) => p.asin === selectedAsin) ?? null;
   }, [selectedAsin, products]);
 
-  if (metaLoading || !minDate) {
+  // Parse meta JSON
+  const metaObj = useMemo(() => {
+    if (!meta?.["meta"]) return null;
+    try { return JSON.parse(meta["meta"]); } catch { return null; }
+  }, [meta]);
+
+  if (!minDate || !maxDate) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 p-8">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-4 w-48" />
-        <div className="flex gap-2 mt-4">
-          <Skeleton className="h-10 w-24" />
-          <Skeleton className="h-10 w-24" />
-          <Skeleton className="h-10 w-24" />
-        </div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading dashboard...</div>
       </div>
     );
   }
@@ -304,8 +292,8 @@ export default function Dashboard() {
                 <span>Amazon: {metaObj?.salesDataSource ?? "SP-API"}</span>
                 <span>Shopify DTC: Shopify Admin API</span>
                 <span>Faire: Faire Orders API</span>
-                <span>{metaObj?.adDataSource ?? ""}</span>
-                <span>{metaObj?.cogsDataSource ?? ""}</span>
+                <span>{metaObj?.adDataSource ?? "Amazon Ads API"}</span>
+                <span>{metaObj?.cogsDataSource ?? "QuickBooks"}</span>
                 {metaObj?.feeDataSource && <span>Fees: {metaObj.feeDataSource}</span>}
               </div>
             </div>

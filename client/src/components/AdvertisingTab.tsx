@@ -23,7 +23,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowUpDown,
   ArrowUp,
@@ -37,12 +36,13 @@ import {
   ShoppingCart,
   Info,
 } from "lucide-react";
-import { useAdvertising } from "@/lib/api";
 import {
+  useAdvertising,
   formatCurrency,
   formatCurrencyPrecise,
   formatNumber,
   formatPercent,
+  AdAsinAggregate,
 } from "@/lib/data";
 
 interface Props {
@@ -60,7 +60,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
 
 function truncate(str: string, len: number) {
   if (str.length <= len) return str;
-  return str.slice(0, len) + "\u2026";
+  return str.slice(0, len) + "…";
 }
 
 function acosColor(acos: number): string {
@@ -128,93 +128,11 @@ const adColumns = [
   { key: "orders", label: "Ad Orders", align: "right" as const },
 ];
 
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-4" data-testid="advertising-tab-loading">
-      {/* KPI skeleton */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-        {Array.from({ length: 7 }).map((_, i) => (
-          <Card key={i}>
-            <CardContent className="p-3">
-              <div className="flex items-center justify-between mb-1.5">
-                <Skeleton className="h-3 w-16" />
-                <Skeleton className="h-3.5 w-3.5 rounded" />
-              </div>
-              <Skeleton className="h-5 w-20 mt-1" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Chart skeleton */}
-      <Card>
-        <CardHeader className="pb-2 pt-4 px-4">
-          <Skeleton className="h-4 w-48" />
-        </CardHeader>
-        <CardContent className="px-2 pb-3">
-          <Skeleton className="w-full h-[260px]" />
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Table skeleton */}
-        <div className="lg:col-span-2">
-          <Card>
-            <CardHeader className="pb-2 pt-4 px-4">
-              <Skeleton className="h-4 w-56" />
-            </CardHeader>
-            <CardContent className="px-4 pb-4 space-y-3">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-4 w-16 ml-auto" />
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-12" />
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Pie chart skeleton */}
-        <div>
-          <Card>
-            <CardHeader className="pb-2 pt-4 px-4">
-              <Skeleton className="h-4 w-44" />
-            </CardHeader>
-            <CardContent className="px-2 pb-3 flex items-center justify-center">
-              <Skeleton className="w-[200px] h-[200px] rounded-full" />
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function AdvertisingTab({ dateRange }: Props) {
   const [sortKey, setSortKey] = useState("spend");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const { data: adData, isLoading } = useAdvertising(dateRange.start, dateRange.end);
-
-  // Transform weekly data: API returns `week` (e.g. "2026-01-19"), add `weekLabel` for chart display
-  const weeklyChartData = useMemo(() => {
-    if (!adData?.weeklyData) return [];
-    return adData.weeklyData.map((w) => ({
-      ...w,
-      weekLabel: new Date(w.week + "T00:00:00").toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      }),
-    }));
-  }, [adData?.weeklyData]);
 
   const sortedAsins = useMemo(() => {
     if (!adData?.asinBreakdown) return [];
@@ -242,7 +160,6 @@ export function AdvertisingTab({ dateRange }: Props) {
     [sortKey]
   );
 
-  // Pie chart data: top 10 by spend, rest as "Other"
   const pieData = useMemo(() => {
     if (!adData?.asinBreakdown) return [];
     const sorted = [...adData.asinBreakdown].sort(
@@ -263,11 +180,8 @@ export function AdvertisingTab({ dateRange }: Props) {
     return items;
   }, [adData?.asinBreakdown]);
 
-  // Totals for the table
   const tableTotals = useMemo(() => {
-    if (!adData?.asinBreakdown) {
-      return { spend: 0, adSales: 0, impressions: 0, clicks: 0, orders: 0, totalRevenue: 0, acos: 0, tacos: 0, ctr: 0, cpc: 0 };
-    }
+    if (!adData?.asinBreakdown) return { spend: 0, adSales: 0, impressions: 0, clicks: 0, orders: 0, totalRevenue: 0, acos: 0, tacos: 0, ctr: 0, cpc: 0 };
     const t = adData.asinBreakdown.reduce(
       (acc, a) => ({
         spend: acc.spend + a.spend,
@@ -288,12 +202,18 @@ export function AdvertisingTab({ dateRange }: Props) {
     };
   }, [adData?.asinBreakdown]);
 
-  // Loading state
   if (isLoading) {
-    return <LoadingSkeleton />;
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <Card key={i}><CardContent className="p-3 h-[72px] animate-pulse" /></Card>
+          ))}
+        </div>
+      </div>
+    );
   }
 
-  // Empty state
   if (!adData?.hasData) {
     return (
       <Card
@@ -316,6 +236,15 @@ export function AdvertisingTab({ dateRange }: Props) {
     );
   }
 
+  // Prepare weekly chart data with formatted labels
+  const weeklyChartData = useMemo(() => {
+    if (!adData?.weeklyData) return [];
+    return adData.weeklyData.map((w) => ({
+      ...w,
+      weekLabel: w.week,
+    }));
+  }, [adData?.weeklyData]);
+
   return (
     <div className="space-y-4" data-testid="advertising-tab">
       {/* Section A: KPI Summary */}
@@ -324,49 +253,13 @@ export function AdvertisingTab({ dateRange }: Props) {
         data-testid="ad-kpi-cards"
       >
         {[
-          {
-            label: "Total Ad Spend",
-            value: formatCurrency(adData.totalSpend),
-            icon: CreditCard,
-            testId: "ad-kpi-spend",
-          },
-          {
-            label: "Ad Sales",
-            value: formatCurrency(adData.totalAdSales),
-            icon: DollarSign,
-            testId: "ad-kpi-sales",
-          },
-          {
-            label: "ACOS",
-            value: formatPercent(adData.acos),
-            icon: Target,
-            testId: "ad-kpi-acos",
-            colorClass: acosColor(adData.acos),
-          },
-          {
-            label: "Total Clicks",
-            value: formatNumber(adData.totalClicks),
-            icon: MousePointerClick,
-            testId: "ad-kpi-clicks",
-          },
-          {
-            label: "Impressions",
-            value: formatNumber(adData.totalImpressions),
-            icon: Eye,
-            testId: "ad-kpi-impressions",
-          },
-          {
-            label: "CTR",
-            value: formatPercent(adData.ctr),
-            icon: TrendingUp,
-            testId: "ad-kpi-ctr",
-          },
-          {
-            label: "CPC",
-            value: formatCurrencyPrecise(adData.cpc),
-            icon: ShoppingCart,
-            testId: "ad-kpi-cpc",
-          },
+          { label: "Total Ad Spend", value: formatCurrency(adData.totalSpend), icon: CreditCard, testId: "ad-kpi-spend" },
+          { label: "Ad Sales", value: formatCurrency(adData.totalAdSales), icon: DollarSign, testId: "ad-kpi-sales" },
+          { label: "ACOS", value: formatPercent(adData.acos), icon: Target, testId: "ad-kpi-acos", colorClass: acosColor(adData.acos) },
+          { label: "Total Clicks", value: formatNumber(adData.totalClicks), icon: MousePointerClick, testId: "ad-kpi-clicks" },
+          { label: "Impressions", value: formatNumber(adData.totalImpressions), icon: Eye, testId: "ad-kpi-impressions" },
+          { label: "CTR", value: formatPercent(adData.ctr), icon: TrendingUp, testId: "ad-kpi-ctr" },
+          { label: "CPC", value: formatCurrencyPrecise(adData.cpc), icon: ShoppingCart, testId: "ad-kpi-cpc" },
         ].map((card) => {
           const Icon = card.icon;
           return (
@@ -380,7 +273,7 @@ export function AdvertisingTab({ dateRange }: Props) {
                 </div>
                 <div
                   className={`text-base font-semibold tabular-nums tracking-tight ${
-                    card.colorClass || ""
+                    (card as any).colorClass || ""
                   }`}
                 >
                   {card.value}
@@ -404,95 +297,28 @@ export function AdvertisingTab({ dateRange }: Props) {
               data={weeklyChartData}
               margin={{ top: 5, right: 10, left: 10, bottom: 5 }}
             >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                vertical={false}
-                stroke="hsl(var(--border))"
-              />
-              <XAxis
-                dataKey="weekLabel"
-                tick={{
-                  fontSize: 11,
-                  fill: "hsl(var(--muted-foreground))",
-                }}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                yAxisId="left"
-                tick={{
-                  fontSize: 11,
-                  fill: "hsl(var(--muted-foreground))",
-                }}
-                tickFormatter={(v) => formatCurrency(v, true)}
-                tickLine={false}
-                axisLine={false}
-                width={60}
-              />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={{
-                  fontSize: 11,
-                  fill: "hsl(var(--muted-foreground))",
-                }}
-                tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                tickLine={false}
-                axisLine={false}
-                width={50}
-                domain={[0, "auto"]}
-              />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null;
-                  return (
-                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
-                      <p className="font-medium mb-1 text-foreground">
-                        {label}
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+              <XAxis dataKey="weekLabel" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} />
+              <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} tickLine={false} axisLine={false} width={50} domain={[0, "auto"]} />
+              <Tooltip content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                return (
+                  <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
+                    <p className="font-medium mb-1 text-foreground">{label}</p>
+                    {payload.map((p: any) => (
+                      <p key={p.dataKey} className="tabular-nums" style={{ color: p.color }}>
+                        {p.dataKey === "spend" ? "Ad Spend" : "ACOS"}: {p.dataKey === "spend" ? formatCurrency(p.value) : formatPercent(p.value)}
                       </p>
-                      {payload.map((p: any) => (
-                        <p
-                          key={p.dataKey}
-                          className="tabular-nums"
-                          style={{ color: p.color }}
-                        >
-                          {p.dataKey === "spend" ? "Ad Spend" : "ACOS"}:{" "}
-                          {p.dataKey === "spend"
-                            ? formatCurrency(p.value)
-                            : formatPercent(p.value)}
-                        </p>
-                      ))}
-                    </div>
-                  );
-                }}
-              />
-              <Legend
-                verticalAlign="top"
-                height={28}
-                iconType="plainline"
-                formatter={(value: string) => (
-                  <span className="text-xs text-muted-foreground">
-                    {value === "spend" ? "Ad Spend" : "ACOS"}
-                  </span>
-                )}
-              />
-              <Bar
-                yAxisId="left"
-                dataKey="spend"
-                fill="hsl(221, 83%, 53%)"
-                fillOpacity={0.85}
-                radius={[2, 2, 0, 0]}
-                name="spend"
-              />
-              <Line
-                yAxisId="right"
-                type="monotone"
-                dataKey="acos"
-                stroke="hsl(0, 84%, 60%)"
-                strokeWidth={2}
-                dot={{ r: 3, fill: "hsl(0, 84%, 60%)" }}
-                name="acos"
-              />
+                    ))}
+                  </div>
+                );
+              }} />
+              <Legend verticalAlign="top" height={28} iconType="plainline" formatter={(value: string) => (
+                <span className="text-xs text-muted-foreground">{value === "spend" ? "Ad Spend" : "ACOS"}</span>
+              )} />
+              <Bar yAxisId="left" dataKey="spend" fill="hsl(221, 83%, 53%)" fillOpacity={0.85} radius={[2, 2, 0, 0]} name="spend" />
+              <Line yAxisId="right" type="monotone" dataKey="acos" stroke="hsl(0, 84%, 60%)" strokeWidth={2} dot={{ r: 3, fill: "hsl(0, 84%, 60%)" }} name="acos" />
             </ComposedChart>
           </ResponsiveContainer>
         </CardContent>
@@ -504,8 +330,7 @@ export function AdvertisingTab({ dateRange }: Props) {
           <Card data-testid="ad-asin-table-card">
             <CardHeader className="pb-2 pt-4 px-4">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                ASIN-Level Ad Performance —{" "}
-                {adData.asinBreakdown.length} Products
+                ASIN-Level Ad Performance — {adData.asinBreakdown.length} Products
               </CardTitle>
             </CardHeader>
             <CardContent className="px-0 pb-0">
@@ -516,109 +341,47 @@ export function AdvertisingTab({ dateRange }: Props) {
                       {adColumns.map((col) => (
                         <TableHead
                           key={col.key}
-                          className={`text-xs font-medium cursor-pointer select-none whitespace-nowrap ${
-                            col.align === "right" ? "text-right" : ""
-                          } ${
-                            col.key === "productTitle"
-                              ? "pl-4 min-w-[200px]"
-                              : "px-2"
-                          }`}
+                          className={`text-xs font-medium cursor-pointer select-none whitespace-nowrap ${col.align === "right" ? "text-right" : ""} ${col.key === "productTitle" ? "pl-4 min-w-[200px]" : "px-2"}`}
                           onClick={() => handleSort(col.key)}
                           data-testid={`ad-sort-${col.key}`}
                         >
-                          <div
-                            className={`flex items-center ${
-                              col.align === "right" ? "justify-end" : ""
-                            }`}
-                          >
+                          <div className={`flex items-center ${col.align === "right" ? "justify-end" : ""}`}>
                             {col.label}
-                            <SortIcon
-                              active={sortKey === col.key}
-                              dir={sortDir}
-                            />
+                            <SortIcon active={sortKey === col.key} dir={sortDir} />
                           </div>
                         </TableHead>
                       ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {/* Total row */}
-                    <TableRow
-                      className="bg-primary/5 dark:bg-primary/10 font-semibold hover:bg-primary/10 border-b-2"
-                      data-testid="ad-row-total"
-                    >
-                      <TableCell className="pl-4 text-xs">
-                        All Products
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatCurrency(tableTotals.spend)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatCurrency(tableTotals.adSales)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        <AcosBadge acos={tableTotals.acos} />
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatPercent(tableTotals.tacos)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatNumber(tableTotals.impressions)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatNumber(tableTotals.clicks)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatPercent(tableTotals.ctr)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatCurrencyPrecise(tableTotals.cpc)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-2">
-                        {formatNumber(tableTotals.orders)}
-                      </TableCell>
+                    <TableRow className="bg-primary/5 dark:bg-primary/10 font-semibold hover:bg-primary/10 border-b-2" data-testid="ad-row-total">
+                      <TableCell className="pl-4 text-xs">All Products</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrency(tableTotals.spend)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrency(tableTotals.adSales)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2"><AcosBadge acos={tableTotals.acos} /></TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatPercent(tableTotals.tacos)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(tableTotals.impressions)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(tableTotals.clicks)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatPercent(tableTotals.ctr)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrencyPrecise(tableTotals.cpc)}</TableCell>
+                      <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(tableTotals.orders)}</TableCell>
                     </TableRow>
 
                     {sortedAsins.map((asin) => (
-                      <TableRow
-                        key={asin.asin}
-                        data-testid={`ad-row-${asin.asin}`}
-                      >
+                      <TableRow key={asin.asin} data-testid={`ad-row-${asin.asin}`}>
                         <TableCell className="pl-4 max-w-[250px]">
-                          <div className="text-xs font-medium leading-tight">
-                            {truncate(asin.productTitle, 50)}
-                          </div>
-                          <span className="text-[10px] text-muted-foreground font-mono">
-                            {asin.sku}
-                          </span>
+                          <div className="text-xs font-medium leading-tight">{truncate(asin.productTitle, 50)}</div>
+                          <span className="text-[10px] text-muted-foreground font-mono">{asin.sku}</span>
                         </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatCurrency(asin.spend)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatCurrency(asin.adSales)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          <AcosBadge acos={asin.acos} />
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatPercent(asin.tacos)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatNumber(asin.impressions)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatNumber(asin.clicks)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatPercent(asin.ctr)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatCurrencyPrecise(asin.cpc)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs tabular-nums px-2">
-                          {formatNumber(asin.orders)}
-                        </TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrency(asin.spend)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrency(asin.adSales)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2"><AcosBadge acos={asin.acos} /></TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatPercent(asin.tacos)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(asin.impressions)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(asin.clicks)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatPercent(asin.ctr)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatCurrencyPrecise(asin.cpc)}</TableCell>
+                        <TableCell className="text-right text-xs tabular-nums px-2">{formatNumber(asin.orders)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -649,35 +412,24 @@ export function AdvertisingTab({ dateRange }: Props) {
                     dataKey="value"
                     nameKey="name"
                     label={({ name, percent }) =>
-                      percent > 0.05
-                        ? `${name} (${(percent * 100).toFixed(0)}%)`
-                        : ""
+                      percent > 0.05 ? `${name} (${(percent * 100).toFixed(0)}%)` : ""
                     }
                     labelLine={false}
                   >
                     {pieData.map((_, index) => (
-                      <Cell
-                        key={`cell-${index}`}
-                        fill={PIE_COLORS[index % PIE_COLORS.length]}
-                      />
+                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const d = payload[0];
-                      return (
-                        <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
-                          <p className="font-medium text-foreground">
-                            {d.name}
-                          </p>
-                          <p className="tabular-nums text-muted-foreground">
-                            {formatCurrency(d.value as number)}
-                          </p>
-                        </div>
-                      );
-                    }}
-                  />
+                  <Tooltip content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0];
+                    return (
+                      <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
+                        <p className="font-medium text-foreground">{d.name}</p>
+                        <p className="tabular-nums text-muted-foreground">{formatCurrency(d.value as number)}</p>
+                      </div>
+                    );
+                  }} />
                 </PieChart>
               </ResponsiveContainer>
             </CardContent>

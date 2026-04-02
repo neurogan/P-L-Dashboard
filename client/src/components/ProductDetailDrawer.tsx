@@ -8,12 +8,16 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useProductDetail } from "@/lib/api";
 import {
   ProductAggregate,
+  useProductDetail,
+  computeMonthlyFromWeekly,
+  computeShopifyMonthly,
   formatCurrency,
   formatPercent,
   formatWeekLabel,
+  WeeklyFact,
+  ShopifyFact,
   CHANNEL_COLORS,
 } from "@/lib/data";
 
@@ -38,39 +42,6 @@ function FeeIndicator({ feeSource }: { feeSource: string | null }) {
   return null;
 }
 
-/** Aggregate weekly rows into monthly buckets */
-function aggregateToMonthly<T extends { weekStartDate: string }>(
-  rows: T[],
-  mapper: (month: string, label: string, bucket: T[]) => Record<string, any>,
-) {
-  const buckets = new Map<string, T[]>();
-  for (const row of rows) {
-    const month = row.weekStartDate.slice(0, 7); // "YYYY-MM"
-    if (!buckets.has(month)) buckets.set(month, []);
-    buckets.get(month)!.push(row);
-  }
-
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, bucket]) => {
-      const d = new Date(month + "-01T00:00:00");
-      const label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-      return mapper(month, label, bucket);
-    });
-}
-
-function sumNullable(values: (number | null | undefined)[]): number | null {
-  const valid = values.filter((v): v is number => v != null);
-  return valid.length > 0 ? valid.reduce((a, b) => a + b, 0) : null;
-}
-
-function combineFeeSource(sources: (string | null | undefined)[]): "settlement" | "estimated" | "mixed" | null {
-  const set = new Set(sources.filter(Boolean));
-  if (set.size === 0) return null;
-  if (set.size === 1) return set.values().next().value as "settlement" | "estimated";
-  return "mixed";
-}
-
 // ─── Amazon Product Drawer ────────────────────────────────────────────────
 
 interface Props {
@@ -83,36 +54,27 @@ interface Props {
 export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props) {
   const [granularity, setGranularity] = useState<Granularity>("weekly");
 
-  const { data: detail, isLoading } = useProductDetail(
-    product?.sku ?? null,
+  const { data: detail } = useProductDetail(
+    product?.sku ?? "",
     dateRange.start,
     dateRange.end,
   );
 
-  const weeklyData = useMemo(() => {
+  // Filter weekly metrics to Amazon channel only
+  const weeklyData: WeeklyFact[] = useMemo(() => {
     if (!detail?.weeklyMetrics) return [];
-    return detail.weeklyMetrics
-      .filter((w: any) => w.channel === "amazon")
-      .sort((a: any, b: any) => (a.weekStartDate ?? "").localeCompare(b.weekStartDate ?? ""));
-  }, [detail]);
+    return detail.weeklyMetrics.filter((w: any) => w.channel === "amazon");
+  }, [detail?.weeklyMetrics]);
 
-  const monthlyData = useMemo(() => {
-    if (weeklyData.length === 0) return [];
-    return aggregateToMonthly(weeklyData as any[], (_month, label, bucket) => ({
-      label,
-      revenue: bucket.reduce((s, w: any) => s + (Number(w.revenue) || 0), 0),
-      adSales: sumNullable(bucket.map((w: any) => w.adSales)),
-      organicSales: sumNullable(bucket.map((w: any) => w.organicSales)),
-      adSpend: sumNullable(bucket.map((w: any) => w.adSpend)),
-      netProfit: sumNullable(bucket.map((w: any) => w.netProfit)),
-      feeSource: combineFeeSource(bucket.map((w: any) => w.feeSource)),
-    }));
-  }, [weeklyData]);
+  const monthlyData = useMemo(
+    () => computeMonthlyFromWeekly(weeklyData),
+    [weeklyData]
+  );
 
   const chartRows = useMemo(() => {
     if (!product) return [];
     if (granularity === "monthly") {
-      return monthlyData.map((m: any) => ({
+      return monthlyData.map((m) => ({
         label: m.label, revenue: m.revenue, adSales: m.adSales, organicSales: m.organicSales,
         adSpend: m.adSpend, netProfit: m.netProfit, feeSource: m.feeSource,
         tacos: m.adSpend != null && m.revenue > 0 ? m.adSpend / m.revenue : null,
@@ -120,17 +82,16 @@ export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props
         marginPct: m.netProfit != null && m.revenue > 0 ? m.netProfit / m.revenue : null,
       }));
     }
-    return weeklyData.map((w: any) => ({
-      label: formatWeekLabel(w.weekStartDate), revenue: Number(w.revenue) || 0, adSales: w.adSales ?? null,
-      organicSales: w.organicSales ?? null, adSpend: w.adSpend ?? null, netProfit: w.netProfit ?? null,
-      feeSource: w.feeSource ?? null,
-      tacos: w.adSpend != null && Number(w.revenue) > 0 ? w.adSpend / Number(w.revenue) : null,
+    return weeklyData.map((w: WeeklyFact) => ({
+      label: formatWeekLabel(w.weekStartDate), revenue: w.revenue, adSales: w.adSales,
+      organicSales: w.organicSales, adSpend: w.adSpend, netProfit: w.netProfit, feeSource: w.feeSource,
+      tacos: w.adSpend != null && w.revenue > 0 ? w.adSpend / w.revenue : null,
       acos: w.adSpend != null && w.adSales != null && w.adSales > 0 ? w.adSpend / w.adSales : null,
-      marginPct: w.netProfit != null && Number(w.revenue) > 0 ? w.netProfit / Number(w.revenue) : null,
+      marginPct: w.netProfit != null && w.revenue > 0 ? w.netProfit / w.revenue : null,
     }));
   }, [weeklyData, monthlyData, granularity, product]);
 
-  const hasAnyAdData = weeklyData.some((w: any) => w.hasAdData);
+  const hasAnyAdData = weeklyData.some((w) => w.hasAdData);
 
   if (!product) return null;
 
@@ -162,11 +123,6 @@ export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props
         </SheetHeader>
 
         <ScrollArea className="flex-1">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-40">
-              <p className="text-xs text-muted-foreground">Loading product data...</p>
-            </div>
-          ) : (
           <div className="px-6 py-4 space-y-6">
             {/* Chart 1: Sales */}
             <div>
@@ -275,7 +231,6 @@ export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props
               </ResponsiveContainer>
             </div>
           </div>
-          )}
         </ScrollArea>
       </SheetContent>
     </Sheet>
@@ -296,40 +251,58 @@ export function ShopifyDetailDrawer({ product, channel, dateRange, onClose, open
   const [granularity, setGranularity] = useState<Granularity>("weekly");
   const channelColor = CHANNEL_COLORS[channel];
 
-  const { data: detail, isLoading } = useProductDetail(
-    product?.sku ?? null,
+  const { data: detail } = useProductDetail(
+    product?.sku ?? "",
     dateRange.start,
     dateRange.end,
   );
 
-  const weeklyData = useMemo(() => {
+  // Filter weekly metrics to this channel and adapt to ShopifyFact shape
+  const weeklyData: ShopifyFact[] = useMemo(() => {
     if (!detail?.weeklyMetrics) return [];
     return detail.weeklyMetrics
       .filter((w: any) => w.channel === channel)
-      .sort((a: any, b: any) => (a.weekStartDate ?? "").localeCompare(b.weekStartDate ?? ""));
-  }, [detail, channel]);
+      .map((w: any): ShopifyFact => ({
+        channel: w.channel,
+        sku: w.sku,
+        productTitle: w.productTitle ?? "",
+        weekStartDate: w.weekStartDate,
+        revenue: w.revenue ?? 0,
+        unitsSold: w.unitsSold ?? 0,
+        orderCount: w.orderCount ?? 0,
+        avgUnitPrice: w.avgUnitPrice ?? 0,
+        cogsPerUnit: w.cogsPerUnit,
+        totalCogs: w.totalCogs,
+        hasCogs: w.hasCogs ?? false,
+        paymentFees: w.totalAmazonFees != null ? Math.abs(w.totalAmazonFees) : 0,
+        netProceeds: w.netProceeds ?? w.revenue,
+        netProfit: w.netProfit,
+        feeSource: w.feeSource ?? "",
+        avgUnitsPerOrder: w.avgUnitsPerOrder ?? null,
+        revenuePerOrder: w.revenuePerOrder ?? null,
+        sessions: w.sessions ?? null,
+        conversionRate: w.conversionRate ?? null,
+        avgTimeOnPage: null,
+        activeSubscriptions: w.activeSubscriptions ?? null,
+      }));
+  }, [detail?.weeklyMetrics, channel]);
 
-  const monthlyData = useMemo(() => {
-    if (weeklyData.length === 0) return [];
-    return aggregateToMonthly(weeklyData as any[], (_month, label, bucket) => ({
-      label,
-      revenue: bucket.reduce((s, w: any) => s + (Number(w.revenue) || 0), 0),
-      netProfit: sumNullable(bucket.map((w: any) => w.netProfit)),
-    }));
-  }, [weeklyData]);
+  const monthlyData = useMemo(
+    () => computeShopifyMonthly(weeklyData),
+    [weeklyData]
+  );
 
   const chartRows = useMemo(() => {
     if (!product) return [];
     if (granularity === "monthly") {
-      return monthlyData.map((m: any) => ({
+      return monthlyData.map((m) => ({
         label: m.label, revenue: m.revenue, netProfit: m.netProfit,
         marginPct: m.netProfit != null && m.revenue > 0 ? m.netProfit / m.revenue : null,
       }));
     }
-    return weeklyData.map((w: any) => ({
-      label: formatWeekLabel(w.weekStartDate), revenue: Number(w.revenue) || 0,
-      netProfit: w.netProfit ?? null,
-      marginPct: w.netProfit != null && Number(w.revenue) > 0 ? w.netProfit / Number(w.revenue) : null,
+    return weeklyData.map((w) => ({
+      label: formatWeekLabel(w.weekStartDate), revenue: w.revenue, netProfit: w.netProfit,
+      marginPct: w.netProfit != null && w.revenue > 0 ? w.netProfit / w.revenue : null,
     }));
   }, [weeklyData, monthlyData, granularity, product]);
 
@@ -353,11 +326,6 @@ export function ShopifyDetailDrawer({ product, channel, dateRange, onClose, open
           </div>
         </SheetHeader>
         <ScrollArea className="flex-1">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-40">
-              <p className="text-xs text-muted-foreground">Loading product data...</p>
-            </div>
-          ) : (
           <div className="px-6 py-4 space-y-6">
             <div>
               <h3 className="text-xs font-semibold text-foreground mb-1">Sales</h3>
@@ -407,7 +375,6 @@ export function ShopifyDetailDrawer({ product, channel, dateRange, onClose, open
               </ResponsiveContainer>
             </div>
           </div>
-          )}
         </ScrollArea>
       </SheetContent>
     </Sheet>

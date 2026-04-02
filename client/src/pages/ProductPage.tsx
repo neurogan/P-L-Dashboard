@@ -13,13 +13,12 @@ import {
 import {
   ArrowLeft, TrendingUp, TrendingDown, Minus, Calculator,
 } from "lucide-react";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
+  useMeta, useProductDetail,
   formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent, formatWeekLabel,
   CHANNEL_COLORS, CHANNEL_LABELS, CHANNEL_BADGE_LABELS,
+  WeeklyFact, AllProduct,
 } from "@/lib/data";
-import { useMeta, useProductDetail, useProductsCatalog } from "@/lib/api";
-import type { ProductDetailData } from "@/lib/api";
 import { UnitEconomicsDrawer } from "@/components/UnitEconomicsDrawer";
 
 // Date helpers
@@ -70,68 +69,54 @@ interface ChannelWeekly {
   reimbursement: number | null;
 }
 
-function buildProductWeeklyData(
-  product: { sku: string; asin: string | null; channels: string[] },
-  weeklyMetrics: Array<Record<string, any>>,
-  adData: Array<Record<string, any>>,
-  startDate: string,
-  endDate: string
+/**
+ * Build ChannelWeekly data from API response.
+ * weeklyMetrics contains rows from ALL channels for this SKU.
+ * adData contains per-week ad rows for this ASIN.
+ */
+function buildProductWeeklyDataFromApi(
+  weeklyMetrics: WeeklyFact[],
+  adData: any[],
 ): ChannelWeekly[] {
-  // Collect Amazon data by week
-  const amazonByWeek = new Map<string, Array<Record<string, any>>>();
-  if (product.asin) {
-    for (const f of weeklyMetrics) {
-      if (f.channel !== "amazon") continue;
-      if (f.weekStartDate < startDate || (f.weekEndDate && f.weekEndDate > endDate)) continue;
-      if (!amazonByWeek.has(f.weekStartDate)) amazonByWeek.set(f.weekStartDate, []);
-      amazonByWeek.get(f.weekStartDate)!.push(f);
-    }
+  // Group metrics by week and channel
+  const byWeekChannel = new Map<string, Map<string, WeeklyFact[]>>();
+  for (const w of weeklyMetrics) {
+    const week = w.weekStartDate;
+    if (!byWeekChannel.has(week)) byWeekChannel.set(week, new Map());
+    const channelMap = byWeekChannel.get(week)!;
+    if (!channelMap.has(w.channel)) channelMap.set(w.channel, []);
+    channelMap.get(w.channel)!.push(w);
   }
 
-  // Collect Shopify/Faire data by week
-  const shopifyByWeek = new Map<string, Array<Record<string, any>>>();
-  const faireByWeek = new Map<string, Array<Record<string, any>>>();
-  for (const f of weeklyMetrics) {
-    if (f.channel !== "shopify_dtc" && f.channel !== "faire") continue;
-    if (f.weekStartDate < startDate || f.weekStartDate > endDate) continue;
-    const map = f.channel === "shopify_dtc" ? shopifyByWeek : faireByWeek;
-    if (!map.has(f.weekStartDate)) map.set(f.weekStartDate, []);
-    map.get(f.weekStartDate)!.push(f);
-  }
-
-  // Collect ad data by week for this ASIN
+  // Build ad spend by week
   const adByWeek = new Map<string, number>();
-  if (product.asin) {
-    for (const w of adData) {
-      if (w.weekStartDate < startDate || w.weekStartDate > endDate) continue;
-      adByWeek.set(w.weekStartDate, (adByWeek.get(w.weekStartDate) ?? 0) + (Number(w.spend) || 0));
-    }
+  for (const ad of adData) {
+    const week = ad.weekStartDate;
+    adByWeek.set(week, (adByWeek.get(week) ?? 0) + (ad.spend ?? 0));
   }
 
   // Union all weeks
   const allWeeks = new Set<string>();
-  amazonByWeek.forEach((_, k) => allWeeks.add(k));
-  shopifyByWeek.forEach((_, k) => allWeeks.add(k));
-  faireByWeek.forEach((_, k) => allWeeks.add(k));
-
+  byWeekChannel.forEach((_, k) => allWeeks.add(k));
   const sorted = Array.from(allWeeks).sort();
 
   return sorted.map((week) => {
-    const amzFacts = amazonByWeek.get(week) ?? [];
-    const shopFacts = shopifyByWeek.get(week) ?? [];
-    const fairFacts = faireByWeek.get(week) ?? [];
+    const channelMap = byWeekChannel.get(week) ?? new Map<string, WeeklyFact[]>();
+    const amzFacts: WeeklyFact[] = channelMap.get("amazon") ?? [];
+    const shopFacts: WeeklyFact[] = channelMap.get("shopify_dtc") ?? [];
+    const fairFacts: WeeklyFact[] = channelMap.get("faire") ?? [];
 
-    const amazonRevenue = amzFacts.reduce((s, f) => s + (Number(f.revenue) || 0), 0);
-    const shopifyRevenue = shopFacts.reduce((s, f) => s + (Number(f.revenue) || 0), 0);
-    const faireRevenue = fairFacts.reduce((s, f) => s + (Number(f.revenue) || 0), 0);
+    const amazonRevenue = amzFacts.reduce((s, f) => s + f.revenue, 0);
+    const shopifyRevenue = shopFacts.reduce((s, f) => s + f.revenue, 0);
+    const faireRevenue = fairFacts.reduce((s, f) => s + f.revenue, 0);
 
-    const amazonUnits = amzFacts.reduce((s, f) => s + (Number(f.unitsSold) || 0), 0);
-    const shopifyUnits = shopFacts.reduce((s, f) => s + (Number(f.unitsSold) || 0), 0);
-    const faireUnits = fairFacts.reduce((s, f) => s + (Number(f.unitsSold) || 0), 0);
+    const amazonUnits = amzFacts.reduce((s, f) => s + f.unitsSold, 0);
+    const shopifyUnits = shopFacts.reduce((s, f) => s + f.unitsSold, 0);
+    const faireUnits = fairFacts.reduce((s, f) => s + f.unitsSold, 0);
 
-    const amazonOrders = amzFacts.reduce((s, f) => s + (Number(f.orderCount) || 0), 0);
-    const shopifyOrders = shopFacts.reduce((s, f) => s + (Number(f.orderCount) || 0), 0);
-    const faireOrders = fairFacts.reduce((s, f) => s + (Number(f.orderCount) || 0), 0);
+    const amazonOrders = amzFacts.reduce((s, f) => s + f.orderCount, 0);
+    const shopifyOrders = shopFacts.reduce((s, f) => s + f.orderCount, 0);
+    const faireOrders = fairFacts.reduce((s, f) => s + f.orderCount, 0);
 
     const amazonAvgPrice = amazonUnits > 0 ? amazonRevenue / amazonUnits : null;
     const shopifyAvgPrice = shopifyUnits > 0 ? shopifyRevenue / shopifyUnits : null;
@@ -141,40 +126,40 @@ function buildProductWeeklyData(
 
     // Fees
     const feeAmzW = amzFacts.filter((f) => f.totalAmazonFees != null);
-    const amazonFees = feeAmzW.length > 0 ? feeAmzW.reduce((s, f) => s + (Number(f.totalAmazonFees) ?? 0), 0) : null;
-    const shopifyFees = shopFacts.reduce((s, f) => s + (Number(f.paymentFees) || 0), 0);
-    const faireFees = fairFacts.reduce((s, f) => s + (Number(f.paymentFees) || 0), 0);
+    const amazonFees = feeAmzW.length > 0 ? feeAmzW.reduce((s, f) => s + (f.totalAmazonFees ?? 0), 0) : null;
+    const shopifyFees = shopFacts.reduce((s, f) => s + ((f as any).paymentFees ?? (f.totalAmazonFees != null ? Math.abs(f.totalAmazonFees) : 0)), 0);
+    const faireFees = fairFacts.reduce((s, f) => s + ((f as any).paymentFees ?? (f.totalAmazonFees != null ? Math.abs(f.totalAmazonFees) : 0)), 0);
 
     // COGS
     const cogsAmzW = amzFacts.filter((f) => f.totalCogs != null);
-    const amazonCogs = cogsAmzW.length > 0 ? cogsAmzW.reduce((s, f) => s + (Number(f.totalCogs) ?? 0), 0) : null;
+    const amazonCogs = cogsAmzW.length > 0 ? cogsAmzW.reduce((s, f) => s + (f.totalCogs ?? 0), 0) : null;
     const cogsShopW = shopFacts.filter((f) => f.totalCogs != null);
-    const shopifyCogs = cogsShopW.length > 0 ? cogsShopW.reduce((s, f) => s + (Number(f.totalCogs) ?? 0), 0) : null;
+    const shopifyCogs = cogsShopW.length > 0 ? cogsShopW.reduce((s, f) => s + (f.totalCogs ?? 0), 0) : null;
     const cogsFlW = fairFacts.filter((f) => f.totalCogs != null);
-    const faireCogs = cogsFlW.length > 0 ? cogsFlW.reduce((s, f) => s + (Number(f.totalCogs) ?? 0), 0) : null;
+    const faireCogs = cogsFlW.length > 0 ? cogsFlW.reduce((s, f) => s + (f.totalCogs ?? 0), 0) : null;
 
     // Net profit
     const npAmzW = amzFacts.filter((f) => f.netProfit != null);
-    const amazonNetProfit = npAmzW.length > 0 ? npAmzW.reduce((s, f) => s + (Number(f.netProfit) ?? 0), 0) : null;
+    const amazonNetProfit = npAmzW.length > 0 ? npAmzW.reduce((s, f) => s + (f.netProfit ?? 0), 0) : null;
     const npShopW = shopFacts.filter((f) => f.netProfit != null);
-    const shopifyNetProfit = npShopW.length > 0 ? npShopW.reduce((s, f) => s + (Number(f.netProfit) ?? 0), 0) : null;
+    const shopifyNetProfit = npShopW.length > 0 ? npShopW.reduce((s, f) => s + (f.netProfit ?? 0), 0) : null;
     const npFlW = fairFacts.filter((f) => f.netProfit != null);
-    const faireNetProfit = npFlW.length > 0 ? npFlW.reduce((s, f) => s + (Number(f.netProfit) ?? 0), 0) : null;
+    const faireNetProfit = npFlW.length > 0 ? npFlW.reduce((s, f) => s + (f.netProfit ?? 0), 0) : null;
 
     const profits = [amazonNetProfit, shopifyNetProfit, faireNetProfit].filter((p) => p != null);
     const totalNetProfit = profits.length > 0 ? profits.reduce((s, p) => s + (p ?? 0), 0) : null;
 
     // Settlement details
     const refFeeW = amzFacts.filter((f) => f.amazonReferralFee != null);
-    const amazonReferralFee = refFeeW.length > 0 ? refFeeW.reduce((s, f) => s + (Number(f.amazonReferralFee) ?? 0), 0) : null;
+    const amazonReferralFee = refFeeW.length > 0 ? refFeeW.reduce((s, f) => s + (f.amazonReferralFee ?? 0), 0) : null;
     const fbaW = amzFacts.filter((f) => f.fbaFulfillmentFee != null);
-    const fbaFulfillmentFee = fbaW.length > 0 ? fbaW.reduce((s, f) => s + (Number(f.fbaFulfillmentFee) ?? 0), 0) : null;
+    const fbaFulfillmentFee = fbaW.length > 0 ? fbaW.reduce((s, f) => s + (f.fbaFulfillmentFee ?? 0), 0) : null;
     const promoW = amzFacts.filter((f) => f.promotions != null);
-    const promotions = promoW.length > 0 ? promoW.reduce((s, f) => s + (Number(f.promotions) ?? 0), 0) : null;
+    const promotions = promoW.length > 0 ? promoW.reduce((s, f) => s + (f.promotions ?? 0), 0) : null;
     const refW = amzFacts.filter((f) => f.refundAmount != null);
-    const refundAmount = refW.length > 0 ? refW.reduce((s, f) => s + (Number(f.refundAmount) ?? 0), 0) : null;
+    const refundAmount = refW.length > 0 ? refW.reduce((s, f) => s + (f.refundAmount ?? 0), 0) : null;
     const reimbW = amzFacts.filter((f) => f.reimbursement != null);
-    const reimbursement = reimbW.length > 0 ? reimbW.reduce((s, f) => s + (Number(f.reimbursement) ?? 0), 0) : null;
+    const reimbursement = reimbW.length > 0 ? reimbW.reduce((s, f) => s + (f.reimbursement ?? 0), 0) : null;
 
     return {
       week,
@@ -370,136 +355,62 @@ function calculateTrends(
   return trends;
 }
 
-function LoadingSkeleton() {
-  return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <header className="border-b border-border bg-card sticky top-0 z-30">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3">
-          <div className="flex items-start gap-3">
-            <Skeleton className="h-8 w-8 mt-0.5" />
-            <div className="space-y-2 flex-1">
-              <Skeleton className="h-5 w-64" />
-              <div className="flex items-center gap-2">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-4 w-32" />
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 mt-3">
-            <Skeleton className="h-6 w-12" />
-            <Skeleton className="h-6 w-12" />
-            <Skeleton className="h-6 w-12" />
-            <Skeleton className="h-6 w-12" />
-            <Skeleton className="h-6 w-12" />
-            <Skeleton className="h-6 w-12" />
-          </div>
-        </div>
-      </header>
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4 flex-1 w-full space-y-4">
-        <Card>
-          <CardHeader className="pb-2 pt-4 px-4">
-            <Skeleton className="h-4 w-48" />
-          </CardHeader>
-          <CardContent className="px-2 pb-3">
-            <Skeleton className="h-[340px] w-full" />
-          </CardContent>
-        </Card>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[0, 1, 2, 3].map((i) => (
-            <Card key={i}>
-              <CardContent className="p-3">
-                <Skeleton className="h-4 w-24 mb-2" />
-                <Skeleton className="h-3 w-full" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[0, 1, 2, 3].map((i) => (
-            <Card key={i}>
-              <CardHeader className="pb-1 pt-3 px-4">
-                <Skeleton className="h-4 w-36" />
-              </CardHeader>
-              <CardContent className="px-2 pb-3">
-                <Skeleton className="h-[220px] w-full" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </main>
-    </div>
-  );
-}
-
 export default function ProductPage() {
   const [, params] = useRoute("/product/:sku");
   const [, setLocation] = useLocation();
   const sku = params?.sku ? decodeURIComponent(params.sku) : null;
 
-  // Fetch meta for date range
-  const { data: metaData, isLoading: metaLoading } = useMeta();
-
-  const maxDate = metaData?.["dateRange.newest"] ?? "";
-  const minDate = metaData?.["dateRange.oldest"] ?? "";
+  const { data: meta } = useMeta();
+  const maxDate = meta?.["dateRange.newest"] ?? "";
+  const minDate = meta?.["dateRange.oldest"] ?? "";
 
   const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
+  const effectiveDateRange = dateRange ?? { start: minDate, end: maxDate };
+
+  // Initialize dateRange once meta loads
+  if (minDate && maxDate && !dateRange) {
+    setDateRange({ start: minDate, end: maxDate });
+  }
+
   const [activeChannels, setActiveChannels] = useState<Set<ChannelKey>>(new Set<ChannelKey>(["amazon", "shopify_dtc", "faire"]));
   const [timeScale, setTimeScale] = useState<"weekly" | "monthly">("weekly");
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Initialize date range from meta once it loads
-  const effectiveDateRange = useMemo(() => {
-    if (dateRange) return dateRange;
-    if (minDate && maxDate) return { start: minDate, end: maxDate };
-    return null;
-  }, [dateRange, minDate, maxDate]);
-
-  // Fetch product detail data from the API
-  const { data: detailData, isLoading: detailLoading } = useProductDetail(
-    sku,
-    effectiveDateRange?.start,
-    effectiveDateRange?.end,
+  // Fetch product detail from API
+  const { data: detail, isLoading } = useProductDetail(
+    sku ?? "",
+    effectiveDateRange.start,
+    effectiveDateRange.end,
   );
 
-  // Fetch catalog for product lookup (used as fallback for product info)
-  const { data: catalog, isLoading: catalogLoading } = useProductsCatalog();
+  // Construct AllProduct shape from API response
+  const product: AllProduct | null = useMemo(() => {
+    if (!detail?.product) return null;
+    const p = detail.product;
+    const channels: string[] = [];
+    const channelSet = new Set<string>();
+    for (const w of (detail.weeklyMetrics ?? [])) {
+      channelSet.add((w as any).channel);
+    }
+    if (channelSet.has("amazon") || p.asin) channels.push("amazon");
+    if (channelSet.has("shopify_dtc")) channels.push("shopify_dtc");
+    if (channelSet.has("faire")) channels.push("faire");
 
-  // Build the product object from the API response
-  const product = useMemo(() => {
-    if (detailData?.product) {
-      const p = detailData.product;
-      return {
-        sku: p.sku,
-        asin: p.asin,
-        productTitle: p.productTitle,
-        channels: p.channels ?? [],
-      };
-    }
-    // Fallback to catalog if detail hasn't loaded yet
-    if (catalog && sku) {
-      const found = catalog.find((c) => c.sku === sku);
-      if (found) {
-        return {
-          sku: found.sku,
-          asin: found.asin,
-          productTitle: found.productTitle,
-          channels: found.channels ?? [],
-        };
-      }
-    }
-    return null;
-  }, [detailData, catalog, sku]);
+    return {
+      sku: p.sku,
+      asin: p.asin ?? null,
+      productTitle: p.productTitle,
+      channels,
+    };
+  }, [detail]);
 
   const weeklyData = useMemo(() => {
-    if (!product || !detailData || !effectiveDateRange) return [];
-    return buildProductWeeklyData(
-      product,
-      detailData.weeklyMetrics ?? [],
-      detailData.adData ?? [],
-      effectiveDateRange.start,
-      effectiveDateRange.end,
+    if (!detail?.weeklyMetrics) return [];
+    return buildProductWeeklyDataFromApi(
+      detail.weeklyMetrics as WeeklyFact[],
+      detail.adData ?? [],
     );
-  }, [product, detailData, effectiveDateRange]);
+  }, [detail]);
 
   const monthlyData = useMemo(() => aggregateToMonthly(weeklyData), [weeklyData]);
   const rawChartData = useMemo(() => timeScale === "weekly" ? weeklyData : monthlyData, [timeScale, weeklyData, monthlyData]);
@@ -593,18 +504,21 @@ export default function ProductPage() {
     ];
   }, [minDate, maxDate]);
 
-  const activePreset = useMemo(() => {
-    if (!effectiveDateRange) return undefined;
-    return presets.find((p) => p.start === effectiveDateRange.start && p.end === effectiveDateRange.end)?.label;
-  }, [presets, effectiveDateRange]);
+  const activePreset = useMemo(() =>
+    presets.find((p) => p.start === effectiveDateRange.start && p.end === effectiveDateRange.end)?.label,
+    [presets, effectiveDateRange]
+  );
 
   // Loading state
-  const isLoading = metaLoading || detailLoading || catalogLoading;
-  if (isLoading && !product) {
-    return <LoadingSkeleton />;
+  if (!minDate || !maxDate) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading...</div>
+      </div>
+    );
   }
 
-  if (!product) {
+  if (!sku || (detail && !detail.product)) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
@@ -614,6 +528,14 @@ export default function ProductPage() {
             <ArrowLeft className="w-4 h-4 mr-2" /> Back to Overview
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  if (isLoading || !product) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading product data...</div>
       </div>
     );
   }
@@ -1043,7 +965,7 @@ export default function ProductPage() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         product={product}
-        dateRange={effectiveDateRange ?? { start: "", end: "" }}
+        dateRange={effectiveDateRange}
         weeklyData={weeklyData}
       />
     </div>

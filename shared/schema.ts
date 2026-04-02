@@ -179,3 +179,21 @@ export const insertAdWeeklySummarySchema = createInsertSchema(
 ).omit({ id: true });
 export type InsertAdWeeklySummary = z.infer<typeof insertAdWeeklySummarySchema>;
 export type AdWeeklySummary = typeof adWeeklySummary.$inferSelect;
+
+// ─── Dashboard Metadata (key-value store) ─────────────────────────────────
+
+export const dashboardMeta = plDashboard.table(
+  "dashboard_meta",
+  {
+    id: serial("id").primaryKey(),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+  },
+  (table) => [uniqueIndex("meta_key_idx").on(table.key)]
+);
+
+export const insertDashboardMetaSchema = createInsertSchema(dashboardMeta).omit({
+  id: true,
+});
+export type InsertDashboardMeta = z.infer<typeof insertDashboardMetaSchema>;
+export type DashboardMeta = typeof dashboardMeta.$inferSelect;

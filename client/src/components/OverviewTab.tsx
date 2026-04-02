@@ -10,20 +10,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   TrendingUp, TrendingDown, DollarSign, Package, PiggyBank, ArrowUpDown, ArrowUp, ArrowDown, Columns3,
   ExternalLink,
 } from "lucide-react";
 import { Link } from "wouter";
 import {
-  useOverview, useChannelMix, useUnifiedProducts, useWeeklyChart,
-  type UnifiedProductRow,
-} from "@/lib/api";
-import {
   formatCurrency, formatNumber, formatPercent, formatWeekLabel,
-  detectPreset, getPriorPeriod, safePctChange, computeOverviewKpis,
-  CHANNEL_COLORS, CHANNEL_BADGE_LABELS,
+  useDynamicOverviewKpis, detectPreset, useChannelMix, useUnifiedProducts,
+  useWeeklyChart,
+  CHANNEL_COLORS, UnifiedProductRow,
 } from "@/lib/data";
 
 interface Props {
@@ -41,7 +37,6 @@ function truncate(str: string, len: number) {
   return str.length <= len ? str : str.slice(0, len) + "…";
 }
 
-// All columns
 const ALL_COLUMNS = [
   { key: "productTitle", label: "Product", align: "left" as const },
   { key: "amazonRev", label: "Amazon Rev", align: "right" as const },
@@ -68,40 +63,8 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
   );
   const hideChange = preset === "All";
 
-  // Compute prior period for comparison
-  const prior = useMemo(() => getPriorPeriod(dateRange, preset), [dateRange, preset]);
-
-  // ─── API hooks ──────────────────────────────────────────────────────────
-
-  // Current period overview
-  const { data: currentOverview, isLoading: overviewLoading } = useOverview(dateRange.start, dateRange.end);
-
-  // Prior period overview (for % change calculations)
-  const { data: priorOverview } = useOverview(
-    prior?.start,
-    prior?.end,
-  );
-
-  // Channel mix
-  const { data: channelMix, isLoading: channelMixLoading } = useChannelMix(dateRange.start, dateRange.end);
-
-  // Unified products
-  const { data: products, isLoading: productsLoading } = useUnifiedProducts(dateRange.start, dateRange.end);
-
-  // Weekly chart (trailing 52 weeks, no date filter)
-  const { data: weeklyChartData, isLoading: heroLoading } = useWeeklyChart();
-
-  // ─── Computed values ────────────────────────────────────────────────────
-
-  const kpis = useMemo(() => {
-    if (!currentOverview) return null;
-    return computeOverviewKpis(
-      currentOverview,
-      priorOverview ?? null,
-      prior?.label ?? null,
-    );
-  }, [currentOverview, priorOverview, prior]);
-
+  // Fetch unified hero chart from API (trailing 52 weeks)
+  const { data: weeklyChartData } = useWeeklyChart(dateRange.start, dateRange.end);
   const heroData = useMemo(() => {
     if (!weeklyChartData) return [];
     return weeklyChartData.slice(-52).map((row) => ({
@@ -115,27 +78,28 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
     }));
   }, [weeklyChartData]);
 
-  const channelMixTotal = useMemo(() => {
-    if (!channelMix) return { revenue: 0, orders: 0, units: 0, netProfit: 0 };
-    return {
-      revenue: channelMix.reduce((s, c) => s + c.revenue, 0),
-      orders: channelMix.reduce((s, c) => s + c.orders, 0),
-      units: channelMix.reduce((s, c) => s + c.units, 0),
-      netProfit: channelMix.reduce((s, c) => s + (c.netProfit ?? 0), 0),
-    };
-  }, [channelMix]);
+  const { data: kpis, isLoading: kpisLoading } = useDynamicOverviewKpis(dateRange, preset);
 
-  const productList = products ?? [];
+  const { data: channelMix = [] } = useChannelMix(dateRange.start, dateRange.end);
+
+  const channelMixTotal = useMemo(() => ({
+    revenue: channelMix.reduce((s, c) => s + c.revenue, 0),
+    orders: channelMix.reduce((s, c) => s + c.orders, 0),
+    units: channelMix.reduce((s, c) => s + c.units, 0),
+    netProfit: channelMix.reduce((s, c) => s + (c.netProfit ?? 0), 0),
+  }), [channelMix]);
+
+  const { data: products = [] } = useUnifiedProducts(dateRange.start, dateRange.end);
 
   const sortedProducts = useMemo(() => {
-    return [...productList].sort((a, b) => {
+    return [...products].sort((a, b) => {
       if (sortKey === "channels") return 0;
       const aVal = (a as any)[sortKey] ?? -Infinity;
       const bVal = (b as any)[sortKey] ?? -Infinity;
       if (typeof aVal === "string") return sortDir === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
-  }, [productList, sortKey, sortDir]);
+  }, [products, sortKey, sortDir]);
 
   const handleSort = useCallback((key: string) => {
     if (key === "channels") return;
@@ -190,9 +154,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
           </div>
         </CardHeader>
         <CardContent className="px-2 pb-3">
-          {heroLoading ? (
-            <Skeleton className="w-full h-[320px]" />
-          ) : (
+          {heroData.length > 0 ? (
             <ResponsiveContainer width="100%" height={320}>
               <ComposedChart data={heroData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
@@ -223,53 +185,44 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
                 <Line yAxisId="right" type="monotone" dataKey="totalNetProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="totalNetProfit" connectNulls />
               </ComposedChart>
             </ResponsiveContainer>
+          ) : (
+            <div className="h-[320px] flex items-center justify-center">
+              <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+            </div>
           )}
         </CardContent>
       </Card>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" data-testid="overview-kpi-cards">
-        {overviewLoading ? (
-          Array.from({ length: 6 }).map((_, i) => (
-            <Card key={i} className="relative overflow-hidden">
+        {kpiCards.length > 0 ? kpiCards.map((card) => {
+          const isPositive = card.change != null ? card.change > 0 : null;
+          const changeColor = isPositive === null ? "" : isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400";
+          const ChangeIcon = card.change != null && card.change >= 0 ? TrendingUp : TrendingDown;
+          const Icon = card.icon;
+          return (
+            <Card key={card.testId} data-testid={card.testId} className="relative overflow-hidden">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <Skeleton className="h-3 w-20" />
-                  <Skeleton className="h-4 w-4 rounded" />
+                  <span className="text-xs font-medium text-muted-foreground">{card.label}</span>
+                  <Icon className="w-4 h-4 text-muted-foreground/50" />
                 </div>
-                <Skeleton className="h-6 w-24 mt-1" />
-                <Skeleton className="h-3 w-16 mt-2" />
+                <div className={`text-lg font-semibold tabular-nums tracking-tight ${card.color}`}>{card.value}</div>
+                {!hideChange && card.change != null && (
+                  <div className={`flex items-center gap-1 mt-1 text-xs ${changeColor}`}>
+                    <ChangeIcon className="w-3 h-3" />
+                    <span className="tabular-nums font-medium">{card.change >= 0 ? "+" : ""}{card.change.toFixed(1)}%</span>
+                  </div>
+                )}
+                {!hideChange && kpis?.comparisonLabel && card.change != null && (
+                  <p className="text-[9px] text-muted-foreground mt-0.5">{kpis.comparisonLabel}</p>
+                )}
               </CardContent>
             </Card>
-          ))
-        ) : (
-          kpiCards.map((card) => {
-            const isPositive = card.change != null ? card.change > 0 : null;
-            const changeColor = isPositive === null ? "" : isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400";
-            const ChangeIcon = card.change != null && card.change >= 0 ? TrendingUp : TrendingDown;
-            const Icon = card.icon;
-            return (
-              <Card key={card.testId} data-testid={card.testId} className="relative overflow-hidden">
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-muted-foreground">{card.label}</span>
-                    <Icon className="w-4 h-4 text-muted-foreground/50" />
-                  </div>
-                  <div className={`text-lg font-semibold tabular-nums tracking-tight ${card.color}`}>{card.value}</div>
-                  {!hideChange && card.change != null && (
-                    <div className={`flex items-center gap-1 mt-1 text-xs ${changeColor}`}>
-                      <ChangeIcon className="w-3 h-3" />
-                      <span className="tabular-nums font-medium">{card.change >= 0 ? "+" : ""}{card.change.toFixed(1)}%</span>
-                    </div>
-                  )}
-                  {!hideChange && kpis?.comparisonLabel && card.change != null && (
-                    <p className="text-[9px] text-muted-foreground mt-0.5">{kpis.comparisonLabel}</p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })
-        )}
+          );
+        }) : Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i}><CardContent className="p-4 h-[88px] animate-pulse" /></Card>
+        ))}
       </div>
 
       {/* Channel Mix Table */}
@@ -278,64 +231,49 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
           <CardTitle className="text-sm font-medium text-muted-foreground">Channel Mix Summary</CardTitle>
         </CardHeader>
         <CardContent className="px-0 pb-0">
-          {channelMixLoading ? (
-            <div className="px-4 pb-4 space-y-3">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-4 w-24" />
-                  <Skeleton className="h-4 w-20 ml-auto" />
-                  <Skeleton className="h-4 w-12" />
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-4 w-20" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="text-xs font-medium pl-4">Channel</TableHead>
-                    <TableHead className="text-xs font-medium text-right px-3">Revenue</TableHead>
-                    <TableHead className="text-xs font-medium text-right px-3">% of Total</TableHead>
-                    <TableHead className="text-xs font-medium text-right px-3">Orders</TableHead>
-                    <TableHead className="text-xs font-medium text-right px-3">Units</TableHead>
-                    <TableHead className="text-xs font-medium text-right px-3">Net Profit</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(channelMix ?? []).map((row) => (
-                    <TableRow key={row.channel} data-testid={`channel-mix-${row.channel}`}>
-                      <TableCell className="pl-4 text-xs font-medium">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: (CHANNEL_COLORS as any)[row.channel] }} />
-                          {row.label}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-3">{formatCurrency(row.revenue)}</TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-3">{formatPercent(row.pctOfTotal)}</TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.orders)}</TableCell>
-                      <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.units)}</TableCell>
-                      <TableCell className={`text-right text-xs tabular-nums px-3 font-medium ${row.netProfit != null && row.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
-                        {formatCurrency(row.netProfit)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  <TableRow className="bg-primary/5 dark:bg-primary/10 font-semibold border-t-2" data-testid="channel-mix-total">
-                    <TableCell className="pl-4 text-xs">Total</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums px-3">{formatCurrency(channelMixTotal.revenue)}</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums px-3">100.0%</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(channelMixTotal.orders)}</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(channelMixTotal.units)}</TableCell>
-                    <TableCell className={`text-right text-xs tabular-nums px-3 font-medium ${channelMixTotal.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
-                      {formatCurrency(channelMixTotal.netProfit)}
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="text-xs font-medium pl-4">Channel</TableHead>
+                  <TableHead className="text-xs font-medium text-right px-3">Revenue</TableHead>
+                  <TableHead className="text-xs font-medium text-right px-3">% of Total</TableHead>
+                  <TableHead className="text-xs font-medium text-right px-3">Orders</TableHead>
+                  <TableHead className="text-xs font-medium text-right px-3">Units</TableHead>
+                  <TableHead className="text-xs font-medium text-right px-3">Net Profit</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {channelMix.map((row) => (
+                  <TableRow key={row.channel} data-testid={`channel-mix-${row.channel}`}>
+                    <TableCell className="pl-4 text-xs font-medium">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: (CHANNEL_COLORS as any)[row.channel] }} />
+                        {row.label}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right text-xs tabular-nums px-3">{formatCurrency(row.revenue)}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums px-3">{formatPercent(row.pctOfTotal)}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.orders)}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.units)}</TableCell>
+                    <TableCell className={`text-right text-xs tabular-nums px-3 font-medium ${row.netProfit != null && row.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
+                      {formatCurrency(row.netProfit)}
                     </TableCell>
                   </TableRow>
-                </TableBody>
-              </Table>
-            </div>
-          )}
+                ))}
+                <TableRow className="bg-primary/5 dark:bg-primary/10 font-semibold border-t-2" data-testid="channel-mix-total">
+                  <TableCell className="pl-4 text-xs">Total</TableCell>
+                  <TableCell className="text-right text-xs tabular-nums px-3">{formatCurrency(channelMixTotal.revenue)}</TableCell>
+                  <TableCell className="text-right text-xs tabular-nums px-3">100.0%</TableCell>
+                  <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(channelMixTotal.orders)}</TableCell>
+                  <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(channelMixTotal.units)}</TableCell>
+                  <TableCell className={`text-right text-xs tabular-nums px-3 font-medium ${channelMixTotal.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
+                    {formatCurrency(channelMixTotal.netProfit)}
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
@@ -343,7 +281,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
       <Card data-testid="overview-product-table">
         <CardHeader className="pb-2 pt-4 px-4">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium text-muted-foreground">All Products — {productList.length} SKUs</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">All Products — {products.length} SKUs</CardTitle>
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-7 text-xs gap-1" data-testid="overview-column-toggle-btn">
@@ -363,78 +301,63 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
           </div>
         </CardHeader>
         <CardContent className="px-0 pb-0">
-          {productsLoading ? (
-            <div className="px-4 pb-4 space-y-3">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-4 w-20 ml-auto" />
-                  <Skeleton className="h-4 w-20" />
-                  <Skeleton className="h-4 w-20" />
-                  <Skeleton className="h-4 w-16" />
-                  <Skeleton className="h-4 w-16" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  {activeColumns.map((col) => (
+                    <TableHead
+                      key={col.key}
+                      className={`text-xs font-medium ${col.key !== "channels" ? "cursor-pointer" : ""} select-none whitespace-nowrap ${col.align === "right" ? "text-right" : ""} ${col.key === "productTitle" ? "pl-4 min-w-[220px]" : "px-3"}`}
+                      onClick={() => handleSort(col.key)}
+                      data-testid={`overview-sort-${col.key}`}
+                    >
+                      <div className={`flex items-center ${col.align === "right" ? "justify-end" : ""}`}>
+                        {col.label}
+                        {col.key !== "channels" && <SortIcon active={sortKey === col.key} dir={sortDir} />}
+                      </div>
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedProducts.map((product) => (
+                  <TableRow
+                    key={product.sku}
+                    data-testid={`overview-row-${product.sku}`}
+                    className="cursor-pointer hover:bg-muted/50 transition-colors"
+                  >
                     {activeColumns.map((col) => (
-                      <TableHead
-                        key={col.key}
-                        className={`text-xs font-medium ${col.key !== "channels" ? "cursor-pointer" : ""} select-none whitespace-nowrap ${col.align === "right" ? "text-right" : ""} ${col.key === "productTitle" ? "pl-4 min-w-[220px]" : "px-3"}`}
-                        onClick={() => handleSort(col.key)}
-                        data-testid={`overview-sort-${col.key}`}
-                      >
-                        <div className={`flex items-center ${col.align === "right" ? "justify-end" : ""}`}>
-                          {col.label}
-                          {col.key !== "channels" && <SortIcon active={sortKey === col.key} dir={sortDir} />}
-                        </div>
-                      </TableHead>
+                      <TableCell key={col.key} className={`${col.align === "right" ? "text-right" : ""} text-xs tabular-nums ${col.key === "productTitle" ? "pl-4 max-w-[300px]" : "px-3"} ${
+                        col.key === "netProfit" ? (product.netProfit != null ? (product.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-red-500 font-medium") : "") :
+                        col.key === "totalRev" ? "font-medium" : ""
+                      }`}>
+                        {col.key === "productTitle" ? (
+                          <Link
+                            href={`/product/${encodeURIComponent(product.sku)}`}
+                            className="block group"
+                            data-testid={`product-link-${product.sku}`}
+                          >
+                            <div className="text-xs font-medium leading-tight group-hover:text-primary transition-colors flex items-center gap-1">
+                              {truncate(product.productTitle, 55)}
+                              <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity flex-shrink-0" />
+                            </div>
+                            <span className="text-[10px] text-muted-foreground font-mono">{product.sku}</span>
+                          </Link>
+                        ) : col.key === "channels" ? (
+                          <div className="flex gap-1 flex-wrap">
+                            {product.channels.includes("amazon") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-blue-600 border-blue-300 dark:text-blue-400 dark:border-blue-700">AMZ</Badge>}
+                            {product.channels.includes("shopify_dtc") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-green-600 border-green-300 dark:text-green-400 dark:border-green-700">SHOP</Badge>}
+                            {product.channels.includes("faire") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-purple-600 border-purple-300 dark:text-purple-400 dark:border-purple-700">FAIRE</Badge>}
+                          </div>
+                        ) : renderCellValue(product, col.key)}
+                      </TableCell>
                     ))}
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sortedProducts.map((product) => (
-                    <TableRow
-                      key={product.sku}
-                      data-testid={`overview-row-${product.sku}`}
-                      className="cursor-pointer hover:bg-muted/50 transition-colors"
-                    >
-                      {activeColumns.map((col) => (
-                        <TableCell key={col.key} className={`${col.align === "right" ? "text-right" : ""} text-xs tabular-nums ${col.key === "productTitle" ? "pl-4 max-w-[300px]" : "px-3"} ${
-                          col.key === "netProfit" ? (product.netProfit != null ? (product.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-red-500 font-medium") : "") :
-                          col.key === "totalRev" ? "font-medium" : ""
-                        }`}>
-                          {col.key === "productTitle" ? (
-                            <Link
-                              href={`/product/${encodeURIComponent(product.sku)}`}
-                              className="block group"
-                              data-testid={`product-link-${product.sku}`}
-                            >
-                              <div className="text-xs font-medium leading-tight group-hover:text-primary transition-colors flex items-center gap-1">
-                                {truncate(product.productTitle, 55)}
-                                <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity flex-shrink-0" />
-                              </div>
-                              <span className="text-[10px] text-muted-foreground font-mono">{product.sku}</span>
-                            </Link>
-                          ) : col.key === "channels" ? (
-                            <div className="flex gap-1 flex-wrap">
-                              {product.channels.includes("amazon") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-blue-600 border-blue-300 dark:text-blue-400 dark:border-blue-700">AMZ</Badge>}
-                              {product.channels.includes("shopify_dtc") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-green-600 border-green-300 dark:text-green-400 dark:border-green-700">SHOP</Badge>}
-                              {product.channels.includes("faire") && <Badge variant="outline" className="h-4 text-[9px] px-1 text-purple-600 border-purple-300 dark:text-purple-400 dark:border-purple-700">FAIRE</Badge>}
-                            </div>
-                          ) : renderCellValue(product, col.key)}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
