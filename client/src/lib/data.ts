@@ -1,7 +1,31 @@
+/**
+ * Data types, formatting helpers, constants, pure computation functions,
+ * and React Query hooks for all dashboard API endpoints.
+ *
+ * All hooks use apiRequest from queryClient for __PORT_5000__ proxy support.
+ * No static JSON is imported — all data comes from PostgreSQL via /api/* endpoints.
+ */
+
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "./queryClient";
 
-// ─── Raw types matching the API responses ────────────────────────────────
+// ─── API fetch helpers ────────────────────────────────────────────────────
+
+async function fetchApi<T>(url: string): Promise<T> {
+  const res = await apiRequest("GET", url);
+  return res.json();
+}
+
+function buildUrl(path: string, params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== "") search.set(k, v);
+  }
+  const qs = search.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+// ─── Raw types (legacy, kept for component compatibility) ─────────────────
 
 export interface Product {
   asin: string;
@@ -185,36 +209,252 @@ export interface DashboardData {
   allProducts: AllProduct[];
 }
 
-// ─── API fetch helper ────────────────────────────────────────────────────
+// ─── Internal raw API response shapes ────────────────────────────────────
 
-async function fetchApi<T>(url: string): Promise<T> {
-  const res = await apiRequest("GET", url);
-  return res.json();
+/** Raw shape returned by /api/overview */
+interface OverviewApiResponse {
+  totals: {
+    revenue: number;
+    units: number;
+    orders: number;
+    netProfit: number;
+    amazonFees: number;
+    adSpend: number;
+    cogs: number;
+    paymentFees: number;
+  };
+  byChannel: Record<string, {
+    revenue: number;
+    units: number;
+    orders: number;
+    netProfit: number;
+  }>;
+  dateRange: { startDate: string; endDate: string };
 }
 
-function buildUrl(path: string, params: Record<string, string | undefined>): string {
-  const search = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null && v !== "") search.set(k, v);
+/** Raw shape returned by /api/products rows */
+interface RawProductRow {
+  sku: string;
+  asin: string | null;
+  productTitle: string;
+  channel: string;
+  revenue: number;
+  units: number;
+  orders: number;
+  amazonFees: number;
+  paymentFees: number;
+  netProceeds: number;
+  cogs: number;
+  adSpend: number;
+  adSales: number;
+  netProfit: number;
+  margin: number | null;
+  tacos: number | null;
+  avgPrice: number | null;
+  b2bRevenue: number;
+  b2cRevenue: number;
+  b2bUnits: number;
+  refundUnits: number;
+}
+
+/** Raw weekly chart row from /api/weekly-chart */
+interface RawWeeklyChartRow {
+  week: string;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  totalRevenue: number;
+  totalNetProfit: number;
+  totalUnits: number;
+  totalOrders: number;
+  totalAdSpend: number;
+  totalAdSales: number;
+}
+
+// ─── Normalization helpers ────────────────────────────────────────────────
+
+/** Transform /api/overview nested response → flat OverviewData shape */
+function normalizeOverview(raw: OverviewApiResponse): {
+  totalRevenue: number;
+  totalUnits: number;
+  totalOrders: number;
+  totalNetProfit: number | null;
+  totalAmazonFees: number | null;
+  totalAdSpend: number | null;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  amazonUnits: number;
+  shopifyUnits: number;
+  faireUnits: number;
+} {
+  const { totals, byChannel } = raw;
+  const amazon = byChannel?.["amazon"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  const shopify = byChannel?.["shopify_dtc"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  const faire = byChannel?.["faire"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  return {
+    totalRevenue: totals.revenue ?? 0,
+    totalUnits: totals.units ?? 0,
+    totalOrders: totals.orders ?? 0,
+    totalNetProfit: totals.netProfit ?? null,
+    totalAmazonFees: totals.amazonFees ?? null,
+    totalAdSpend: totals.adSpend ?? null,
+    amazonRevenue: amazon.revenue ?? 0,
+    shopifyRevenue: shopify.revenue ?? 0,
+    faireRevenue: faire.revenue ?? 0,
+    amazonUnits: amazon.units ?? 0,
+    shopifyUnits: shopify.units ?? 0,
+    faireUnits: faire.units ?? 0,
+  };
+}
+
+/** Normalize a raw /api/products row → ProductAggregate */
+function rawToProductAggregate(r: RawProductRow): ProductAggregate {
+  const unitsSold = r.units ?? 0;
+  const orderCount = r.orders ?? 0;
+  const revenue = r.revenue ?? 0;
+  const adSpend = r.adSpend != null && r.adSpend !== 0 ? r.adSpend : null;
+  const adSales = r.adSales != null && r.adSales !== 0 ? r.adSales : null;
+  const totalCogs = r.cogs != null && r.cogs !== 0 ? r.cogs : null;
+  const totalAmazonFees = r.amazonFees != null && r.amazonFees !== 0 ? r.amazonFees : null;
+  const netProceeds = r.netProceeds != null ? r.netProceeds : null;
+  const netProfit = r.netProfit != null ? r.netProfit : null;
+  const marginPct = r.margin != null ? r.margin / 100 : null;
+  const tacos = r.tacos != null ? r.tacos / 100 : null;
+  const acos = adSpend != null && adSales != null && adSales > 0 ? adSpend / adSales : null;
+
+  return {
+    asin: r.asin ?? "",
+    sku: r.sku,
+    productTitle: r.productTitle,
+    hasCogs: totalCogs != null && totalCogs > 0,
+    revenue,
+    totalCogs,
+    totalAmazonFees,
+    netProceeds,
+    adSpend,
+    adSales,
+    netProfit,
+    marginPct,
+    unitsSold,
+    avgPrice: r.avgPrice ?? (unitsSold > 0 ? revenue / unitsSold : 0),
+    feeSource: null,
+    orderCount,
+    refundAmount: null,
+    tacos,
+    acos,
+    avgUnitsPerOrder: orderCount > 0 ? unitsSold / orderCount : null,
+    revenuePerOrder: orderCount > 0 ? revenue / orderCount : null,
+    refundRate: null,
+    b2bRevenue: r.b2bRevenue != null && r.b2bRevenue !== 0 ? r.b2bRevenue : null,
+    b2cRevenue: r.b2cRevenue != null && r.b2cRevenue !== 0 ? r.b2cRevenue : null,
+    b2bUnits: r.b2bUnits != null && r.b2bUnits !== 0 ? r.b2bUnits : null,
+  };
+}
+
+/** Normalize a raw /api/products row → ShopifyProductAggregate */
+function rawToShopifyAggregate(r: RawProductRow): ShopifyProductAggregate {
+  const unitsSold = r.units ?? 0;
+  const orderCount = r.orders ?? 0;
+  const revenue = r.revenue ?? 0;
+  const paymentFees = r.paymentFees ?? 0;
+  const totalCogs = r.cogs != null && r.cogs !== 0 ? r.cogs : null;
+  const netProceeds = r.netProceeds ?? revenue - paymentFees;
+  const netProfit = r.netProfit != null ? r.netProfit : null;
+  const marginPct = r.margin != null ? r.margin / 100 : null;
+
+  return {
+    sku: r.sku,
+    productTitle: r.productTitle,
+    revenue,
+    paymentFees,
+    totalCogs,
+    netProceeds,
+    netProfit,
+    marginPct,
+    unitsSold,
+    orderCount,
+    avgPrice: r.avgPrice ?? (unitsSold > 0 ? revenue / unitsSold : 0),
+    hasCogs: totalCogs != null && totalCogs > 0,
+  };
+}
+
+/** Build UnifiedProductRow[] by aggregating /api/products rows across channels */
+function buildUnifiedProducts(rows: RawProductRow[]): UnifiedProductRow[] {
+  const map: Record<string, {
+    sku: string; asin: string | null; productTitle: string;
+    channels: string[]; amazonRev: number; shopifyRev: number; faireRev: number;
+    totalRev: number; totalUnits: number; totalOrders: number;
+    netProfit: number | null;
+  }> = {};
+
+  for (const r of rows) {
+    if (!map[r.sku]) {
+      map[r.sku] = {
+        sku: r.sku, asin: r.asin, productTitle: r.productTitle,
+        channels: [], amazonRev: 0, shopifyRev: 0, faireRev: 0,
+        totalRev: 0, totalUnits: 0, totalOrders: 0, netProfit: null,
+      };
+    }
+    const u = map[r.sku];
+    if (!u.channels.includes(r.channel)) u.channels.push(r.channel);
+    if (r.channel === "amazon") u.amazonRev += r.revenue ?? 0;
+    else if (r.channel === "shopify_dtc") u.shopifyRev += r.revenue ?? 0;
+    else if (r.channel === "faire") u.faireRev += r.revenue ?? 0;
+    u.totalRev += r.revenue ?? 0;
+    u.totalUnits += r.units ?? 0;
+    u.totalOrders += r.orders ?? 0;
+    if (r.netProfit != null) u.netProfit = (u.netProfit ?? 0) + r.netProfit;
+    if (r.asin && !u.asin) u.asin = r.asin;
   }
-  const qs = search.toString();
-  return qs ? `${path}?${qs}` : path;
+
+  return Object.values(map)
+    .map((u) => ({
+      ...u,
+      marginPct: u.netProfit != null && u.totalRev > 0 ? u.netProfit / u.totalRev : null,
+    }))
+    .sort((a, b) => b.totalRev - a.totalRev);
 }
 
-// ─── React Query hooks for API endpoints ─────────────────────────────────
+// ─── React Query hooks ────────────────────────────────────────────────────
 
+/**
+ * useMeta — derive date range bounds from /api/weekly-chart (no date filter).
+ * Returns { "dateRange.oldest", "dateRange.newest", generatedAt, meta }.
+ */
 export function useMeta() {
   return useQuery<Record<string, string>>({
     queryKey: ["/api/meta"],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      const weeks = rows.map((r) => r.week).sort();
+      const oldest = weeks[0] ?? "";
+      const newest = weeks[weeks.length - 1] ?? "";
+      return {
+        "dateRange.oldest": oldest,
+        "dateRange.newest": newest,
+        generatedAt: new Date().toISOString(),
+        meta: JSON.stringify({}),
+      };
+    },
+    staleTime: 5 * 60 * 1000,
   });
 }
 
+/**
+ * useProductsCatalog — GET /api/products-catalog (all products, no date filter).
+ */
 export function useProductsCatalog() {
   return useQuery<AllProduct[]>({
     queryKey: ["/api/products-catalog"],
+    queryFn: () => fetchApi("/api/products-catalog"),
+    staleTime: 5 * 60 * 1000,
   });
 }
 
+/**
+ * useOverview — GET /api/overview, transform nested response to flat shape.
+ */
 export function useOverview(startDate?: string, endDate?: string) {
   return useQuery<{
     totalRevenue: number;
@@ -231,64 +471,216 @@ export function useOverview(startDate?: string, endDate?: string) {
     faireUnits: number;
   }>({
     queryKey: ["/api/overview", { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl("/api/overview", { startDate, endDate })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const raw = await fetchApi<OverviewApiResponse>(
+        buildUrl("/api/overview", { startDate, endDate })
+      );
+      return normalizeOverview(raw);
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useChannelMix — GET /api/channel-mix with date filters.
+ */
 export function useChannelMix(startDate?: string, endDate?: string) {
   return useQuery<ChannelMixRow[]>({
     queryKey: ["/api/channel-mix", { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl("/api/channel-mix", { startDate, endDate })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const rows = await fetchApi<any[]>(
+        buildUrl("/api/channel-mix", { startDate, endDate })
+      );
+      return rows.map((r) => ({
+        channel: r.channel ?? "",
+        label: r.channel ?? "",
+        revenue: r.revenue ?? 0,
+        pctOfTotal: r.pctOfTotal ?? 0,
+        orders: r.orders ?? 0,
+        units: r.units ?? 0,
+        netProfit: r.netProfit ?? null,
+      }));
+    },
+    staleTime: 60000,
   });
 }
 
-export function useProducts(startDate?: string, endDate?: string, channel?: string, sortBy?: string, sortDir?: string) {
+/**
+ * useProducts — GET /api/products with optional channel filter.
+ * Returns ProductAggregate[] with normalized field names.
+ */
+export function useProducts(
+  startDate?: string,
+  endDate?: string,
+  channel?: string,
+  sortBy?: string,
+  sortDir?: string,
+) {
   return useQuery<ProductAggregate[]>({
     queryKey: ["/api/products", { startDate, endDate, channel, sortBy, sortDir }],
-    queryFn: () => fetchApi(buildUrl("/api/products", { startDate, endDate, channel, sortBy, sortDir })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate, channel })
+      );
+      let result = rows
+        .filter((r) => channel ? r.channel === channel : true)
+        .map(rawToProductAggregate);
+      if (sortBy) {
+        result = result.sort((a, b) => {
+          const aVal = (a as any)[sortBy] ?? -Infinity;
+          const bVal = (b as any)[sortBy] ?? -Infinity;
+          return sortDir === "asc" ? aVal - bVal : bVal - aVal;
+        });
+      }
+      return result;
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useShopifyProducts — GET /api/products?channel=X.
+ * Returns ShopifyProductAggregate[] for Shopify DTC or Faire channel.
+ */
 export function useShopifyProducts(channel: string, startDate?: string, endDate?: string) {
   return useQuery<ShopifyProductAggregate[]>({
     queryKey: ["/api/products", { startDate, endDate, channel }],
-    queryFn: () => fetchApi(buildUrl("/api/products", { startDate, endDate, channel })),
-    enabled: !!startDate && !!endDate && !!channel,
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate, channel })
+      );
+      return rows
+        .filter((r) => r.channel === channel)
+        .map(rawToShopifyAggregate);
+    },
+    enabled: !!channel,
+    staleTime: 60000,
   });
 }
 
+/**
+ * useUnifiedProducts — GET /api/products (all channels), aggregate by SKU.
+ * Builds cross-channel summary for the Overview tab product table.
+ */
 export function useUnifiedProducts(startDate?: string, endDate?: string) {
   return useQuery<UnifiedProductRow[]>({
     queryKey: ["/api/unified-products", { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl("/api/unified-products", { startDate, endDate })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate })
+      );
+      return buildUnifiedProducts(rows);
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useWeeklyChart — GET /api/weekly-chart with optional date filters.
+ * Returns UnifiedHeroRow[] (channel revenue + totals per week).
+ */
 export function useWeeklyChart(startDate?: string, endDate?: string, channel?: string) {
   return useQuery<UnifiedHeroRow[]>({
     queryKey: ["/api/weekly-chart", { startDate, endDate, channel }],
-    queryFn: () => fetchApi(buildUrl("/api/weekly-chart", { startDate, endDate, channel })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>(
+        buildUrl("/api/weekly-chart", { startDate, endDate })
+      );
+      return rows.map((r) => ({
+        week: r.week,
+        amazonRevenue: r.amazonRevenue ?? 0,
+        shopifyRevenue: r.shopifyRevenue ?? 0,
+        faireRevenue: r.faireRevenue ?? 0,
+        totalRevenue: r.totalRevenue ?? 0,
+        amazonUnits: 0,
+        shopifyUnits: 0,
+        faireUnits: 0,
+        totalUnits: r.totalUnits ?? 0,
+        amazonOrders: 0,
+        shopifyOrders: 0,
+        faireOrders: 0,
+        totalOrders: r.totalOrders ?? 0,
+        amazonNetProfit: null,
+        shopifyNetProfit: null,
+        faireNetProfit: null,
+        totalNetProfit: r.totalNetProfit ?? null,
+      }));
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useHeroChart — GET /api/weekly-chart (no date filter) for the main hero chart.
+ * Returns HeroChartRow[] with total revenue + net profit per week.
+ */
 export function useHeroChart() {
   return useQuery<HeroChartRow[]>({
     queryKey: ["/api/hero-chart"],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      return rows.map((r) => ({
+        week: r.week,
+        revenue: r.totalRevenue ?? 0,
+        units: r.totalUnits ?? 0,
+        orders: r.totalOrders ?? 0,
+        totalAmazonFees: null,
+        promotions: null,
+        refunds: null,
+        totalCogs: null,
+        adSpend: r.totalAdSpend ?? null,
+        adSales: r.totalAdSales ?? null,
+        organicSales: null,
+        netProceeds: null,
+        netProfit: r.totalNetProfit ?? null,
+        feeSource: null,
+        reimbursement: null,
+      }));
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useChannelHero — GET /api/weekly-chart and filter/project to a single channel.
+ * Returns rows with { week, revenue, units, orders, netProfit, cogs }.
+ */
 export function useChannelHero(channel: string) {
   return useQuery<Array<{ week: string; rawWeek?: string; revenue: number; units: number; orders: number; netProfit: number | null; cogs: number | null }>>({
     queryKey: ["/api/channel-hero", channel],
-    queryFn: () => fetchApi(`/api/channel-hero/${channel}`),
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      return rows.map((r) => {
+        let revenue = 0;
+        if (channel === "amazon") revenue = r.amazonRevenue ?? 0;
+        else if (channel === "shopify_dtc") revenue = r.shopifyRevenue ?? 0;
+        else if (channel === "faire") revenue = r.faireRevenue ?? 0;
+        else revenue = r.totalRevenue ?? 0;
+
+        // Estimate per-channel net profit proportionally from total
+        let netProfit: number | null = null;
+        if (r.totalRevenue && r.totalRevenue > 0 && r.totalNetProfit != null) {
+          netProfit = (revenue / r.totalRevenue) * r.totalNetProfit;
+        }
+
+        return {
+          week: r.week,
+          rawWeek: r.week,
+          revenue,
+          units: 0,
+          orders: 0,
+          netProfit,
+          cogs: null,
+        };
+      });
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useProductDetail — GET /api/product/:sku with date filters.
+ */
 export function useProductDetail(sku: string, startDate?: string, endDate?: string) {
   return useQuery<{
     product: any;
@@ -299,9 +691,13 @@ export function useProductDetail(sku: string, startDate?: string, endDate?: stri
     queryKey: ["/api/product", sku, { startDate, endDate }],
     queryFn: () => fetchApi(buildUrl(`/api/product/${encodeURIComponent(sku)}`, { startDate, endDate })),
     enabled: !!sku,
+    staleTime: 60000,
   });
 }
 
+/**
+ * useAdvertising — GET /api/advertising, transform {kpis, weeklyTrend, asinBreakdown}.
+ */
 export function useAdvertising(startDate?: string, endDate?: string) {
   return useQuery<{
     totalSpend: number;
@@ -317,31 +713,126 @@ export function useAdvertising(startDate?: string, endDate?: string) {
     hasData: boolean;
   }>({
     queryKey: ["/api/advertising", { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl("/api/advertising", { startDate, endDate })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const raw = await fetchApi<any>(
+        buildUrl("/api/advertising", { startDate, endDate })
+      );
+      const kpis = raw.kpis ?? {};
+      const weeklyTrend: any[] = raw.weeklyTrend ?? [];
+      const asinBreakdown: any[] = raw.asinBreakdown ?? [];
+
+      return {
+        totalSpend: kpis.totalSpend ?? 0,
+        totalAdSales: kpis.totalAdSales ?? 0,
+        acos: kpis.acos ?? 0,
+        totalClicks: kpis.totalClicks ?? 0,
+        totalImpressions: kpis.totalImpressions ?? 0,
+        ctr: kpis.ctr ?? 0,
+        cpc: kpis.cpc ?? 0,
+        totalOrders: weeklyTrend.reduce((s: number, r: any) => s + (r.totalOrders ?? 0), 0),
+        weeklyData: weeklyTrend.map((r: any) => ({
+          week: r.week,
+          spend: r.totalSpend ?? 0,
+          acos: r.acos ?? 0,
+        })),
+        asinBreakdown: asinBreakdown.map((r: any) => ({
+          asin: r.asin ?? "",
+          sku: r.sku ?? "",
+          productTitle: r.productTitle ?? "",
+          spend: r.spend ?? 0,
+          adSales: r.adSales ?? 0,
+          impressions: r.impressions ?? 0,
+          clicks: r.clicks ?? 0,
+          ctr: r.ctr ?? 0,
+          cpc: r.cpc ?? 0,
+          orders: r.orders ?? 0,
+          acos: r.acos ?? 0,
+          tacos: r.tacos ?? 0,
+          totalRevenue: r.totalRevenue ?? 0,
+        })),
+        hasData: asinBreakdown.length > 0,
+      };
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * usePareto — GET /api/pareto, returns the products array from the response.
+ */
 export function usePareto(startDate?: string, endDate?: string) {
   return useQuery<ParetoProduct[]>({
     queryKey: ["/api/pareto", { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl("/api/pareto", { startDate, endDate })),
-    enabled: !!startDate && !!endDate,
+    queryFn: async () => {
+      const raw = await fetchApi<any>(
+        buildUrl("/api/pareto", { startDate, endDate })
+      );
+      // Server returns { products, summary } — extract products array
+      const rows: any[] = Array.isArray(raw) ? raw : (raw.products ?? []);
+      return rows.map((r) => ({
+        sku: r.sku ?? "",
+        productTitle: r.productTitle ?? "",
+        revenue: r.revenue ?? 0,
+        netProfit: r.netProfit ?? null,
+        hasCogs: r.cogs != null && r.cogs > 0,
+        channels: r.channels ?? [],
+        // Preserve extra fields used by ParetoTab
+        value: r.value,
+        units: r.units,
+        cogs: r.cogs,
+        adSpend: r.adSpend,
+        margin: r.margin,
+        pctOfTotal: r.pctOfTotal,
+        cumulativePct: r.cumulativePct,
+        tier: r.tier,
+        rank: r.rank,
+      }));
+    },
+    staleTime: 60000,
   });
 }
 
+/**
+ * useCogsPeriods — GET /api/cogs-periods with optional SKU filter.
+ */
 export function useCogsPeriods(sku?: string) {
   return useQuery<any[]>({
     queryKey: ["/api/cogs-periods", { sku }],
     queryFn: () => fetchApi(buildUrl("/api/cogs-periods", { sku })),
+    staleTime: 60000,
   });
 }
 
-export function useProductWeeklyRevenue(asin: string) {
+/**
+ * useProductWeeklyRevenue — look up SKU from catalog, then GET /api/product/:sku.
+ * Returns { [weekDate]: revenue } for the given ASIN.
+ */
+export function useProductWeeklyRevenue(asin: string | null) {
+  const { data: catalog } = useProductsCatalog();
+
+  const sku = asin && catalog
+    ? (catalog.find((p) => p.asin === asin)?.sku ?? null)
+    : null;
+
   return useQuery<Record<string, number>>({
     queryKey: ["/api/product-weekly-revenue", asin],
-    queryFn: () => fetchApi(`/api/product-weekly-revenue/${encodeURIComponent(asin)}`),
-    enabled: !!asin,
+    queryFn: async () => {
+      if (!sku) return {};
+      const detail = await fetchApi<{ weeklyMetrics: any[] }>(
+        `/api/product/${encodeURIComponent(sku)}`
+      );
+      const revMap: Record<string, number> = {};
+      for (const row of detail.weeklyMetrics ?? []) {
+        const week = row.weekStartDate ?? row.week;
+        const ch = row.channel ?? "";
+        if (week && ch === "amazon") {
+          revMap[week] = (revMap[week] ?? 0) + (row.revenue ?? 0);
+        }
+      }
+      return revMap;
+    },
+    enabled: !!asin && !!sku,
+    staleTime: 60000,
   });
 }
 
@@ -366,6 +857,7 @@ export const CHANNEL_BADGE_LABELS: Record<string, string> = {
 };
 
 // ─── 29-product fixed color palette ──────────────────────────────────────
+
 export const PRODUCT_COLORS = [
   "#e63946", "#457b9d", "#f4a261", "#2a9d8f", "#e76f51",
   "#264653", "#a8dadc", "#f1faee", "#606c38", "#dda15e",
@@ -435,7 +927,7 @@ export function formatWeekLabel(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// ─── Aggregate types ─────────────────────────────────────────────────────
+// ─── Aggregate types ──────────────────────────────────────────────────────
 
 export interface ProductAggregate {
   asin: string;
@@ -512,6 +1004,7 @@ export interface ParetoProduct {
   netProfit: number | null;
   hasCogs: boolean;
   channels: string[];
+  [key: string]: any;
 }
 
 export interface AdAsinAggregate {
@@ -615,7 +1108,7 @@ export function getPriorPeriod(
   };
 }
 
-// ─── Totals computation (works on already-aggregated product data) ───────
+// ─── Totals computation (works on already-aggregated product data) ────────
 
 export function getTotals(products: ProductAggregate[]): ProductAggregate {
   const revenue = products.reduce((s, p) => s + p.revenue, 0);
@@ -685,7 +1178,7 @@ export function getShopifyTotals(products: ShopifyProductAggregate[]): ShopifyPr
   };
 }
 
-// ─── Expanded metrics types ──────────────────────────────────────────────
+// ─── Expanded metrics types ───────────────────────────────────────────────
 
 export interface AmazonExpandedMetrics {
   avgUnitsPerOrder: number | null;
@@ -710,7 +1203,7 @@ export interface ShopifyExpandedMetrics {
   activeSubscriptions: null;
 }
 
-// ─── Gini coefficient (pure math, no API needed) ─────────────────────────
+// ─── Gini coefficient (pure math) ────────────────────────────────────────
 
 export function calculateGiniCoefficient(values: number[]): number {
   const n = values.length;
@@ -725,7 +1218,7 @@ export function calculateGiniCoefficient(values: number[]): number {
   return numerator / (n * total);
 }
 
-// ─── KPI interfaces ─────────────────────────────────────────────────────
+// ─── KPI interfaces ───────────────────────────────────────────────────────
 
 function safePctChange(curr: number | null, prev: number | null): number | null {
   if (curr == null || prev == null || prev === 0) return null;
@@ -826,7 +1319,7 @@ export interface ChannelKpiData {
   unitsSoldChange: number;
 }
 
-// ─── Dynamic KPI hooks (compute period comparison using two API calls) ───
+// ─── Dynamic KPI hooks (two-period comparison) ────────────────────────────
 
 export function useDynamicAmazonKpis(dateRange: { start: string; end: string }, preset: DatePreset) {
   const current = useOverview(dateRange.start, dateRange.end);
@@ -908,7 +1401,6 @@ export function useDynamicOverviewKpis(dateRange: { start: string; end: string }
 }
 
 export function useDynamicChannelKpis(channel: "shopify_dtc" | "faire", dateRange: { start: string; end: string }, preset: DatePreset) {
-  // Use products endpoint with channel filter for Shopify/Faire KPIs
   const currentProducts = useShopifyProducts(channel, dateRange.start, dateRange.end);
   const prior = getPriorPeriod(dateRange, preset);
   const prevProducts = useShopifyProducts(channel, prior?.start, prior?.end);
@@ -951,7 +1443,7 @@ export function useDynamicChannelKpis(channel: "shopify_dtc" | "faire", dateRang
   return { data: result, isLoading: currentProducts.isLoading || prevProducts.isLoading };
 }
 
-// ─── Helper to compute monthly from weekly data ──────────────────────────
+// ─── Monthly aggregation helpers ─────────────────────────────────────────
 
 export function computeMonthlyFromWeekly(weeks: WeeklyFact[]): MonthlyProductData[] {
   const byMonth = new Map<string, { facts: WeeklyFact[]; label: string }>();
@@ -1012,7 +1504,7 @@ export function computeShopifyMonthly(weeks: ShopifyFact[]): ShopifyMonthlyRow[]
     });
 }
 
-// ─── CSV export (client-side, works on already-fetched data) ─────────────
+// ─── CSV export helpers ───────────────────────────────────────────────────
 
 function downloadCsv(csv: string, filename: string) {
   const blob = new Blob([csv], { type: "text/csv" });
@@ -1094,7 +1586,7 @@ export function exportShopifyCsv(products: ShopifyProductAggregate[], channel: s
   downloadCsv(csv, filename);
 }
 
-// ─── Compat: getAmazonExpandedMetrics from product aggregate ─────────────
+// ─── Compat: expanded metrics helpers ────────────────────────────────────
 
 export function getAmazonExpandedMetrics(
   productOrAsin: string | ProductAggregate,
@@ -1139,5 +1631,43 @@ export function getShopifyExpandedMetrics(
   return {
     avgUnitsPerOrder: null, revenuePerOrder: null,
     sessions: null, conversionRate: null, avgTimeOnPage: null, activeSubscriptions: null,
+  };
+}
+
+// ─── computeOverviewKpis (compat helper) ─────────────────────────────────
+
+export function computeOverviewKpis(
+  current: { totalRevenue: number; amazonRevenue: number; shopifyRevenue: number; faireRevenue: number; totalNetProfit: number | null; totalUnits: number; [key: string]: any },
+  previous: typeof current | null,
+  comparisonLabel: string | null,
+): OverviewKpiResult {
+  if (!previous) {
+    return {
+      totalRevenue: current.totalRevenue,
+      amazonRevenue: current.amazonRevenue,
+      shopifyRevenue: current.shopifyRevenue,
+      faireRevenue: current.faireRevenue,
+      totalNetProfit: current.totalNetProfit,
+      totalUnits: current.totalUnits,
+      totalRevenueChange: null, amazonRevenueChange: null,
+      shopifyRevenueChange: null, faireRevenueChange: null,
+      totalNetProfitChange: null, totalUnitsChange: null,
+      comparisonLabel: null,
+    };
+  }
+  return {
+    totalRevenue: current.totalRevenue,
+    amazonRevenue: current.amazonRevenue,
+    shopifyRevenue: current.shopifyRevenue,
+    faireRevenue: current.faireRevenue,
+    totalNetProfit: current.totalNetProfit,
+    totalUnits: current.totalUnits,
+    totalRevenueChange: safePctChange(current.totalRevenue, previous.totalRevenue),
+    amazonRevenueChange: safePctChange(current.amazonRevenue, previous.amazonRevenue),
+    shopifyRevenueChange: safePctChange(current.shopifyRevenue, previous.shopifyRevenue),
+    faireRevenueChange: safePctChange(current.faireRevenue, previous.faireRevenue),
+    totalNetProfitChange: safePctChange(current.totalNetProfit, previous.totalNetProfit),
+    totalUnitsChange: safePctChange(current.totalUnits, previous.totalUnits),
+    comparisonLabel,
   };
 }
