@@ -13,26 +13,36 @@ import { SubscribeSaveTab } from "@/components/SubscribeSaveTab";
 import { ParetoTab } from "@/components/ParetoTab";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
-  data,
-  aggregateProducts,
+  useMeta,
+  useProducts,
+  useAdvertising,
+  useUnifiedProducts,
+  useShopifyProducts,
   getTotals,
   exportProfitabilityCsv,
   exportAdCsv,
   exportOverviewCsv,
   exportShopifyCsv,
-  getAdSummaryForRange,
-  getUnifiedProducts,
-  aggregateShopifyProducts,
+  ProductAggregate,
 } from "@/lib/data";
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Date range state
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({
-    start: data.dateRange.oldest,
-    end: data.dateRange.newest,
-  });
+  // Fetch metadata (date range, data sources)
+  const { data: meta } = useMeta();
+
+  const minDate = meta?.["dateRange.oldest"] ?? "";
+  const maxDate = meta?.["dateRange.newest"] ?? "";
+
+  // Date range state — initialized to full range once meta loads
+  const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
+  const effectiveDateRange = dateRange ?? { start: minDate, end: maxDate };
+
+  // If meta loaded but we haven't set the date range yet, initialize it
+  if (minDate && maxDate && !dateRange) {
+    setDateRange({ start: minDate, end: maxDate });
+  }
 
   // Selected product for detail drawer (Amazon tab)
   const [selectedAsin, setSelectedAsin] = useState<string | null>(null);
@@ -44,13 +54,16 @@ export default function Dashboard() {
   const [sortKey, setSortKey] = useState<string>("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  // Aggregate Amazon products
-  const products = useMemo(
-    () => aggregateProducts(data.weeklyFacts, dateRange.start, dateRange.end),
-    [dateRange]
+  // Fetch Amazon products from API
+  const { data: products = [] } = useProducts(
+    effectiveDateRange.start,
+    effectiveDateRange.end,
+    "amazon",
+    sortKey,
+    sortDir
   );
 
-  // Sort Amazon products
+  // Sort Amazon products (already sorted by API, but if sortKey/dir change client-side we re-sort)
   const sortedProducts = useMemo(() => {
     const sorted = [...products].sort((a, b) => {
       const aVal = (a as any)[sortKey] ?? -Infinity;
@@ -89,30 +102,52 @@ export default function Dashboard() {
     });
   }, []);
 
+  // Fetch data needed for CSV export (lazy — only used on click)
+  const { data: adData } = useAdvertising(effectiveDateRange.start, effectiveDateRange.end);
+  const { data: unifiedProducts } = useUnifiedProducts(effectiveDateRange.start, effectiveDateRange.end);
+  const { data: shopifyProds } = useShopifyProducts("shopify_dtc", effectiveDateRange.start, effectiveDateRange.end);
+  const { data: faireProds } = useShopifyProducts("faire", effectiveDateRange.start, effectiveDateRange.end);
+
   const handleExport = useCallback(() => {
     if (activeTab === "advertising") {
-      const adData = getAdSummaryForRange(dateRange.start, dateRange.end);
-      if (adData.hasData) {
+      if (adData?.hasData && adData.asinBreakdown) {
         exportAdCsv(adData.asinBreakdown, "neurogan-ad-performance.csv");
       }
     } else if (activeTab === "overview") {
-      const prods = getUnifiedProducts(dateRange.start, dateRange.end);
-      exportOverviewCsv(prods, "neurogan-overview-export.csv");
+      if (unifiedProducts) {
+        exportOverviewCsv(unifiedProducts, "neurogan-overview-export.csv");
+      }
     } else if (activeTab === "shopify") {
-      const prods = aggregateShopifyProducts("shopify_dtc", dateRange.start, dateRange.end);
-      exportShopifyCsv(prods, "shopify_dtc", "neurogan-shopify-export.csv");
+      if (shopifyProds) {
+        exportShopifyCsv(shopifyProds, "shopify_dtc", "neurogan-shopify-export.csv");
+      }
     } else if (activeTab === "faire") {
-      const prods = aggregateShopifyProducts("faire", dateRange.start, dateRange.end);
-      exportShopifyCsv(prods, "faire", "neurogan-faire-export.csv");
+      if (faireProds) {
+        exportShopifyCsv(faireProds, "faire", "neurogan-faire-export.csv");
+      }
     } else {
       exportProfitabilityCsv(sortedProducts, "neurogan-amazon-pl-export.csv");
     }
-  }, [activeTab, sortedProducts, dateRange]);
+  }, [activeTab, sortedProducts, adData, unifiedProducts, shopifyProds, faireProds]);
 
   const selectedProduct = useMemo(() => {
     if (!selectedAsin) return null;
     return products.find((p) => p.asin === selectedAsin) ?? null;
   }, [selectedAsin, products]);
+
+  // Parse meta JSON
+  const metaObj = useMemo(() => {
+    if (!meta?.["meta"]) return null;
+    try { return JSON.parse(meta["meta"]); } catch { return null; }
+  }, [meta]);
+
+  if (!minDate || !maxDate) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading dashboard...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -154,23 +189,23 @@ export default function Dashboard() {
           {/* Tab 1: Overview */}
           <TabsContent value="overview" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <OverviewTab dateRange={dateRange} />
+            <OverviewTab dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 2: Amazon */}
           <TabsContent value="amazon" className="space-y-4">
             <HeroChart selectedAsins={chartSelectedAsins} />
-            <KpiCards dateRange={dateRange} />
+            <KpiCards dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
             <ProductTable
               products={sortedProducts}
@@ -182,11 +217,13 @@ export default function Dashboard() {
               onSelectProduct={setSelectedAsin}
               chartSelectedAsins={chartSelectedAsins}
               onToggleChartAsin={handleToggleChartAsin}
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
+              minDate={minDate}
+              maxDate={maxDate}
             />
             <ProductDetailDrawer
               product={selectedProduct}
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onClose={() => setSelectedAsin(null)}
               open={!!selectedProduct}
             />
@@ -195,45 +232,45 @@ export default function Dashboard() {
           {/* Tab 3: Shopify */}
           <TabsContent value="shopify" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ChannelTab channel="shopify_dtc" dateRange={dateRange} />
+            <ChannelTab channel="shopify_dtc" dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 4: Faire/Wholesale */}
           <TabsContent value="faire" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ChannelTab channel="faire" dateRange={dateRange} />
+            <ChannelTab channel="faire" dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
           </TabsContent>
 
           {/* Tab 5: Advertising */}
           <TabsContent value="advertising" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <AdvertisingTab dateRange={dateRange} />
+            <AdvertisingTab dateRange={effectiveDateRange} />
           </TabsContent>
 
           {/* Tab 6: Pareto Analysis */}
           <TabsContent value="pareto" className="space-y-4">
             <DateRangeSelector
-              dateRange={dateRange}
+              dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
-              minDate={data.dateRange.oldest}
-              maxDate={data.dateRange.newest}
+              minDate={minDate}
+              maxDate={maxDate}
             />
-            <ParetoTab dateRange={dateRange} />
+            <ParetoTab dateRange={effectiveDateRange} />
           </TabsContent>
 
           {/* Tab 7: Subscribe & Save */}
@@ -252,12 +289,12 @@ export default function Dashboard() {
                 Data Sources
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground/80">
-                <span>Amazon: {data.meta.salesDataSource}</span>
+                <span>Amazon: {metaObj?.salesDataSource ?? "SP-API"}</span>
                 <span>Shopify DTC: Shopify Admin API</span>
                 <span>Faire: Faire Orders API</span>
-                <span>{data.meta.adDataSource}</span>
-                <span>{data.meta.cogsDataSource}</span>
-                {data.meta.feeDataSource && <span>Fees: {data.meta.feeDataSource}</span>}
+                <span>{metaObj?.adDataSource ?? "Amazon Ads API"}</span>
+                <span>{metaObj?.cogsDataSource ?? "QuickBooks"}</span>
+                {metaObj?.feeDataSource && <span>Fees: {metaObj.feeDataSource}</span>}
               </div>
             </div>
             <PerplexityAttribution />

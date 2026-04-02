@@ -16,15 +16,17 @@ import {
 } from "lucide-react";
 import {
   formatCurrency, formatNumber, formatPercent, formatWeekLabel,
-  getChannelHeroData, getDynamicChannelKpis, aggregateShopifyProducts,
+  useChannelHero, useDynamicChannelKpis, useShopifyProducts,
   getShopifyTotals, getShopifyExpandedMetrics, getPriorPeriod,
-  detectPreset, data, ShopifyProductAggregate, CHANNEL_COLORS, CHANNEL_LABELS, DatePreset,
+  detectPreset, ShopifyProductAggregate, CHANNEL_COLORS, CHANNEL_LABELS, DatePreset,
 } from "@/lib/data";
 import { ShopifyDetailDrawer } from "@/components/ProductDetailDrawer";
 
 interface Props {
   channel: "shopify_dtc" | "faire";
   dateRange: { start: string; end: string };
+  minDate: string;
+  maxDate: string;
 }
 
 function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
@@ -36,7 +38,6 @@ function truncate(str: string, len: number) {
   return str.length <= len ? str : str.slice(0, len) + "…";
 }
 
-// Column definitions
 const SHOPIFY_ALL_COLUMNS = [
   { key: "productTitle", label: "Product", align: "left" as const },
   { key: "revenue", label: "Revenue", align: "right" as const },
@@ -63,13 +64,13 @@ const FAIRE_ALL_COLUMNS = [
 const SHOPIFY_DEFAULT_ON = ["productTitle", "revenue", "paymentFees", "netProfit", "marginPct", "unitsSold"];
 const FAIRE_DEFAULT_ON = ["productTitle", "revenue", "totalCogs", "netProfit", "marginPct", "unitsSold"];
 
-function ShopifyExpandedRow({ sku, channel, dateRange }: { sku: string; channel: "shopify_dtc" | "faire"; dateRange: { start: string; end: string } }) {
+function ShopifyExpandedRow({ sku, channel, dateRange, minDate, maxDate }: { sku: string; channel: "shopify_dtc" | "faire"; dateRange: { start: string; end: string }; minDate: string; maxDate: string }) {
   const metrics = useMemo(
     () => getShopifyExpandedMetrics(channel, sku, dateRange.start, dateRange.end),
     [sku, channel, dateRange]
   );
 
-  const preset = detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest);
+  const preset = detectPreset(dateRange, minDate, maxDate);
   const prior = getPriorPeriod(dateRange, preset);
   const priorMetrics = useMemo(() => {
     if (!prior) return null;
@@ -119,7 +120,7 @@ function ShopifyExpandedRow({ sku, channel, dateRange }: { sku: string; channel:
   );
 }
 
-export function ChannelTab({ channel, dateRange }: Props) {
+export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
   const [sortKey, setSortKey] = useState("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
@@ -134,24 +135,28 @@ export function ChannelTab({ channel, dateRange }: Props) {
   const channelLabel = CHANNEL_LABELS[channel];
   const isShopify = channel === "shopify_dtc";
 
-  const heroData = useMemo(() => getChannelHeroData(channel), [channel]);
+  // Fetch channel hero data from API
+  const { data: rawHeroData } = useChannelHero(channel);
+  const heroData = useMemo(() => {
+    if (!rawHeroData) return [];
+    return rawHeroData.slice(-52).map((row) => ({
+      week: formatWeekLabel(row.week),
+      rawWeek: row.week,
+      revenue: row.revenue,
+      netProfit: row.netProfit,
+    }));
+  }, [rawHeroData]);
 
   const preset = useMemo(
-    () => detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest),
-    [dateRange]
+    () => detectPreset(dateRange, minDate, maxDate),
+    [dateRange, minDate, maxDate]
   );
 
-  const kpis = useMemo(
-    () => getDynamicChannelKpis(channel, dateRange, preset),
-    [channel, dateRange, preset]
-  );
+  const { data: kpis, isLoading: kpisLoading } = useDynamicChannelKpis(channel, dateRange, preset);
 
   const hideChange = preset === "All";
 
-  const products = useMemo(
-    () => aggregateShopifyProducts(channel, dateRange.start, dateRange.end),
-    [channel, dateRange]
-  );
+  const { data: products = [] } = useShopifyProducts(channel, dateRange.start, dateRange.end);
 
   const totals = useMemo(() => getShopifyTotals(products), [products]);
 
@@ -193,7 +198,7 @@ export function ChannelTab({ channel, dateRange }: Props) {
 
   const activeColumns = allCols.filter((c) => visibleColumns.has(c.key));
 
-  const kpiCards = isFaire
+  const kpiCards = kpis ? (isFaire
     ? [
         { label: "Revenue", value: formatCurrency(kpis.revenue), change: kpis.revenueChange, icon: DollarSign, testId: `${channel}-kpi-revenue` },
         { label: "COGS", value: formatCurrency(kpis.cogs), change: null, icon: Receipt, testId: `${channel}-kpi-cogs` },
@@ -208,7 +213,7 @@ export function ChannelTab({ channel, dateRange }: Props) {
         { label: "Net Profit", value: formatCurrency(kpis.netProfit), change: kpis.netProfitChange, icon: PiggyBank, testId: `${channel}-kpi-profit` },
         { label: "Units", value: formatNumber(kpis.unitsSold), change: kpis.unitsSoldChange, icon: Package, testId: `${channel}-kpi-units` },
         { label: "Margin %", value: kpis.marginPct != null ? formatPercent(kpis.marginPct) : "—", change: null, icon: Percent, testId: `${channel}-kpi-margin` },
-      ];
+      ]) : [];
 
   function renderCellValue(product: ShopifyProductAggregate, key: string) {
     switch (key) {
@@ -234,33 +239,39 @@ export function ChannelTab({ channel, dateRange }: Props) {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-2 pb-3">
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={heroData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-              <XAxis dataKey="week" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={40} />
-              <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
-              <Tooltip content={({ active, payload, label }) => {
-                if (!active || !payload?.length) return null;
-                const d = payload[0]?.payload;
-                return (
-                  <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
-                    <p className="font-medium mb-1 text-foreground">{label}</p>
-                    <p className="tabular-nums" style={{ color: channelColor }}>Revenue: {formatCurrency(d?.revenue)}</p>
-                    <p className="tabular-nums text-emerald-500">Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "—"}</p>
-                  </div>
-                );
-              }} />
-              <Bar yAxisId="left" dataKey="revenue" fill={channelColor} fillOpacity={0.85} radius={[2, 2, 0, 0]} name="revenue" />
-              <Line yAxisId="right" type="monotone" dataKey="netProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="netProfit" connectNulls />
-            </ComposedChart>
-          </ResponsiveContainer>
+          {heroData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={320}>
+              <ComposedChart data={heroData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="week" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={40} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0]?.payload;
+                  return (
+                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
+                      <p className="font-medium mb-1 text-foreground">{label}</p>
+                      <p className="tabular-nums" style={{ color: channelColor }}>Revenue: {formatCurrency(d?.revenue)}</p>
+                      <p className="tabular-nums text-emerald-500">Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "—"}</p>
+                    </div>
+                  );
+                }} />
+                <Bar yAxisId="left" dataKey="revenue" fill={channelColor} fillOpacity={0.85} radius={[2, 2, 0, 0]} name="revenue" />
+                <Line yAxisId="right" type="monotone" dataKey="netProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="netProfit" connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[320px] flex items-center justify-center">
+              <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* KPI Cards */}
       <div className={`grid grid-cols-2 md:grid-cols-3 ${isFaire ? "lg:grid-cols-5" : "lg:grid-cols-6"} gap-3`} data-testid={`${channel}-kpi-cards`}>
-        {kpiCards.map((card) => {
+        {kpiCards.length > 0 ? kpiCards.map((card) => {
           const isPositive = card.change != null ? card.change > 0 : null;
           const changeColor = isPositive === null ? "" : isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400";
           const ChangeIcon = card.change != null && card.change >= 0 ? TrendingUp : TrendingDown;
@@ -279,13 +290,15 @@ export function ChannelTab({ channel, dateRange }: Props) {
                     <span className="tabular-nums font-medium">{card.change >= 0 ? "+" : ""}{card.change.toFixed(1)}%</span>
                   </div>
                 )}
-                {!hideChange && kpis.comparisonLabel && card.change != null && (
+                {!hideChange && kpis?.comparisonLabel && card.change != null && (
                   <p className="text-[9px] text-muted-foreground mt-0.5">{kpis.comparisonLabel}</p>
                 )}
               </CardContent>
             </Card>
           );
-        })}
+        }) : Array.from({ length: isFaire ? 5 : 6 }).map((_, i) => (
+          <Card key={i}><CardContent className="p-4 h-[88px] animate-pulse" /></Card>
+        ))}
       </div>
 
       {/* Product Table */}
@@ -389,7 +402,7 @@ export function ChannelTab({ channel, dateRange }: Props) {
                       {isShopify && isExpanded && (
                         <TableRow key={`${product.sku}-expanded`} className="hover:bg-transparent">
                           <TableCell colSpan={activeColumns.length + 1} className="p-0 bg-muted/30">
-                            <ShopifyExpandedRow sku={product.sku} channel={channel} dateRange={dateRange} />
+                            <ShopifyExpandedRow sku={product.sku} channel={channel} dateRange={dateRange} minDate={minDate} maxDate={maxDate} />
                           </TableCell>
                         </TableRow>
                       )}

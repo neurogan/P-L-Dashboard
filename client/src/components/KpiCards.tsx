@@ -4,26 +4,35 @@ import {
   TrendingUp, TrendingDown, DollarSign, Package, Receipt, Wallet, PiggyBank, Percent,
 } from "lucide-react";
 import {
-  getDynamicAmazonKpis, detectPreset, data,
-  formatCurrency, formatNumber, formatPercent, DatePreset,
+  useDynamicAmazonKpis, detectPreset,
+  formatCurrency, formatNumber, formatPercent,
 } from "@/lib/data";
 
 interface Props {
   dateRange: { start: string; end: string };
+  minDate: string;
+  maxDate: string;
 }
 
-export function KpiCards({ dateRange }: Props) {
+export function KpiCards({ dateRange, minDate, maxDate }: Props) {
   const preset = useMemo(
-    () => detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest),
-    [dateRange]
+    () => detectPreset(dateRange, minDate, maxDate),
+    [dateRange, minDate, maxDate]
   );
 
-  const kpis = useMemo(
-    () => getDynamicAmazonKpis(dateRange, preset),
-    [dateRange, preset]
-  );
+  const { data: kpis, isLoading } = useDynamicAmazonKpis(dateRange, preset);
 
   const hideChange = preset === "All";
+
+  if (isLoading || !kpis) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" data-testid="kpi-cards">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i}><CardContent className="p-4 h-[88px] animate-pulse" /></Card>
+        ))}
+      </div>
+    );
+  }
 
   const cards = [
     { label: "Revenue", value: formatCurrency(kpis.revenue), change: kpis.revenueChange, icon: DollarSign, testId: "kpi-revenue", invertColor: false },

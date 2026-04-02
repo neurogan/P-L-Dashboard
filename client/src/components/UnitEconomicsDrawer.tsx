@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
-  data, formatCurrencyPrecise, formatCurrency,
+  formatCurrencyPrecise, formatCurrency,
   AllProduct, CHANNEL_COLORS,
+  useCogsPeriods,
 } from "@/lib/data";
 
 type ChannelKey = "amazon" | "shopify_dtc" | "faire";
@@ -59,8 +60,7 @@ interface CogsPeriod {
   ends_date: string;
 }
 
-function findCogsPeriod(sku: string, asin: string | null): CogsPeriod | null {
-  const periods = (data as any).cogsPeriods as CogsPeriod[];
+function findCogsPeriod(periods: CogsPeriod[], sku: string, asin: string | null): CogsPeriod | null {
   if (!periods || periods.length === 0) return null;
 
   // Match by SKU first, then by ASIN
@@ -128,7 +128,11 @@ export function UnitEconomicsDrawer({ open, onClose, product, dateRange, weeklyD
     availableChannels.includes("amazon") ? "amazon" : availableChannels[0]
   );
 
-  const cogsPeriod = useMemo(() => findCogsPeriod(product.sku, product.asin), [product]);
+  const { data: cogsPeriodsData } = useCogsPeriods(product.sku);
+  const cogsPeriod = useMemo(
+    () => findCogsPeriod((cogsPeriodsData as CogsPeriod[]) ?? [], product.sku, product.asin),
+    [cogsPeriodsData, product],
+  );
 
   const channelData = useMemo(() => {
     const sumN = (fn: (w: ChannelWeekly) => number) => weeklyData.reduce((s, w) => s + fn(w), 0);

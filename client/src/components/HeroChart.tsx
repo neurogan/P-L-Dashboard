@@ -11,22 +11,35 @@ import {
   Legend,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { data, formatCurrency, formatWeekLabel, getProductColor, getProductWeeklyRevenue } from "@/lib/data";
+import { useHeroChart, useProductsCatalog, useProductWeeklyRevenue, formatCurrency, formatWeekLabel, getProductColor } from "@/lib/data";
 
 interface Props {
   selectedAsins: string[];
 }
 
 export function HeroChart({ selectedAsins }: Props) {
-  const chartData = useMemo(() => {
-    const hero = data.heroChartData;
-    const slice = hero.slice(-52);
+  const { data: heroChartData } = useHeroChart();
+  const { data: allProducts } = useProductsCatalog();
 
-    // Pre-compute per-product weekly revenue maps for selected ASINs
-    const productMaps = selectedAsins.map((asin) => ({
-      asin,
-      map: getProductWeeklyRevenue(asin),
-    }));
+  // Fetch per-product weekly revenue for each selected ASIN (max 5 slots)
+  const rev0 = useProductWeeklyRevenue(selectedAsins[0] ?? "");
+  const rev1 = useProductWeeklyRevenue(selectedAsins[1] ?? "");
+  const rev2 = useProductWeeklyRevenue(selectedAsins[2] ?? "");
+  const rev3 = useProductWeeklyRevenue(selectedAsins[3] ?? "");
+  const rev4 = useProductWeeklyRevenue(selectedAsins[4] ?? "");
+
+  const productRevMaps = useMemo(() => {
+    const maps: Array<{ asin: string; map: Record<string, number> }> = [];
+    const revQueries = [rev0, rev1, rev2, rev3, rev4];
+    for (let i = 0; i < selectedAsins.length; i++) {
+      maps.push({ asin: selectedAsins[i], map: revQueries[i]?.data ?? {} });
+    }
+    return maps;
+  }, [selectedAsins, rev0.data, rev1.data, rev2.data, rev3.data, rev4.data]);
+
+  const chartData = useMemo(() => {
+    if (!heroChartData) return [];
+    const slice = heroChartData.slice(-52);
 
     return slice.map((row) => {
       const entry: any = {
@@ -39,8 +52,8 @@ export function HeroChart({ selectedAsins }: Props) {
 
       if (selectedAsins.length > 0) {
         let selectedTotal = 0;
-        for (const { asin, map } of productMaps) {
-          const val = map.get(row.week) ?? 0;
+        for (const { asin, map } of productRevMaps) {
+          const val = map[row.week] ?? 0;
           entry[`product_${asin}`] = val;
           selectedTotal += val;
         }
@@ -51,18 +64,31 @@ export function HeroChart({ selectedAsins }: Props) {
 
       return entry;
     });
-  }, [selectedAsins]);
+  }, [heroChartData, selectedAsins, productRevMaps]);
 
-  // Build product names lookup
   const productNames = useMemo(() => {
     const map = new Map<string, string>();
-    for (const p of data.products) {
-      map.set(p.asin, p.productTitle.length > 35 ? p.productTitle.slice(0, 35) + "…" : p.productTitle);
+    if (allProducts) {
+      for (const p of allProducts) {
+        if (p.asin) {
+          map.set(p.asin, p.productTitle.length > 35 ? p.productTitle.slice(0, 35) + "…" : p.productTitle);
+        }
+      }
     }
     return map;
-  }, []);
+  }, [allProducts]);
 
   const hasSelectedProducts = selectedAsins.length > 0;
+
+  if (!heroChartData) {
+    return (
+      <Card data-testid="hero-chart-card">
+        <CardContent className="h-[380px] flex items-center justify-center">
+          <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card data-testid="hero-chart-card">
@@ -143,13 +169,11 @@ export function HeroChart({ selectedAsins }: Props) {
                 if (value === "netProfit") return <span className="text-xs text-muted-foreground">Net Profit</span>;
                 if (value === "revenue") return <span className="text-xs text-muted-foreground">Revenue</span>;
                 if (value === "remainingRevenue") return <span className="text-xs text-muted-foreground">Other Revenue</span>;
-                // Product name
                 const asin = value.replace("product_", "");
                 return <span className="text-xs text-muted-foreground">{productNames.get(asin) ?? asin}</span>;
               }}
             />
 
-            {/* Bars: either single revenue or stacked */}
             {!hasSelectedProducts ? (
               <Bar
                 yAxisId="left"

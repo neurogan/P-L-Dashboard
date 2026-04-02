@@ -16,13 +16,16 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import {
-  data, formatCurrency, formatNumber, formatPercent, formatWeekLabel,
-  getDynamicOverviewKpis, detectPreset, getChannelMix, getUnifiedProducts,
-  CHANNEL_COLORS, CHANNEL_BADGE_LABELS, UnifiedProductRow,
+  formatCurrency, formatNumber, formatPercent, formatWeekLabel,
+  useDynamicOverviewKpis, detectPreset, useChannelMix, useUnifiedProducts,
+  useWeeklyChart,
+  CHANNEL_COLORS, UnifiedProductRow,
 } from "@/lib/data";
 
 interface Props {
   dateRange: { start: string; end: string };
+  minDate: string;
+  maxDate: string;
 }
 
 function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
@@ -34,7 +37,6 @@ function truncate(str: string, len: number) {
   return str.length <= len ? str : str.slice(0, len) + "…";
 }
 
-// All columns
 const ALL_COLUMNS = [
   { key: "productTitle", label: "Product", align: "left" as const },
   { key: "amazonRev", label: "Amazon Rev", align: "right" as const },
@@ -50,20 +52,22 @@ const ALL_COLUMNS = [
 
 const DEFAULT_ON = ["productTitle", "amazonRev", "shopifyRev", "totalRev", "netProfit", "totalUnits", "channels"];
 
-export function OverviewTab({ dateRange }: Props) {
+export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
   const [sortKey, setSortKey] = useState("totalRev");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(DEFAULT_ON));
 
   const preset = useMemo(
-    () => detectPreset(dateRange, data.dateRange.oldest, data.dateRange.newest),
-    [dateRange]
+    () => detectPreset(dateRange, minDate, maxDate),
+    [dateRange, minDate, maxDate]
   );
   const hideChange = preset === "All";
 
+  // Fetch unified hero chart from API (trailing 52 weeks)
+  const { data: weeklyChartData } = useWeeklyChart(dateRange.start, dateRange.end);
   const heroData = useMemo(() => {
-    const hero = data.unifiedHero;
-    return hero.slice(-52).map((row) => ({
+    if (!weeklyChartData) return [];
+    return weeklyChartData.slice(-52).map((row) => ({
       week: formatWeekLabel(row.week),
       rawWeek: row.week,
       amazonRevenue: row.amazonRevenue,
@@ -72,17 +76,11 @@ export function OverviewTab({ dateRange }: Props) {
       totalRevenue: row.totalRevenue,
       totalNetProfit: row.totalNetProfit,
     }));
-  }, []);
+  }, [weeklyChartData]);
 
-  const kpis = useMemo(
-    () => getDynamicOverviewKpis(dateRange, preset),
-    [dateRange, preset]
-  );
+  const { data: kpis, isLoading: kpisLoading } = useDynamicOverviewKpis(dateRange, preset);
 
-  const channelMix = useMemo(
-    () => getChannelMix(dateRange.start, dateRange.end),
-    [dateRange]
-  );
+  const { data: channelMix = [] } = useChannelMix(dateRange.start, dateRange.end);
 
   const channelMixTotal = useMemo(() => ({
     revenue: channelMix.reduce((s, c) => s + c.revenue, 0),
@@ -91,10 +89,7 @@ export function OverviewTab({ dateRange }: Props) {
     netProfit: channelMix.reduce((s, c) => s + (c.netProfit ?? 0), 0),
   }), [channelMix]);
 
-  const products = useMemo(
-    () => getUnifiedProducts(dateRange.start, dateRange.end),
-    [dateRange]
-  );
+  const { data: products = [] } = useUnifiedProducts(dateRange.start, dateRange.end);
 
   const sortedProducts = useMemo(() => {
     return [...products].sort((a, b) => {
@@ -123,14 +118,14 @@ export function OverviewTab({ dateRange }: Props) {
 
   const activeColumns = ALL_COLUMNS.filter((c) => visibleColumns.has(c.key));
 
-  const kpiCards = [
+  const kpiCards = kpis ? [
     { label: "Total Revenue", value: formatCurrency(kpis.totalRevenue), change: kpis.totalRevenueChange, icon: DollarSign, testId: "overview-kpi-total-revenue", color: "" },
     { label: "Amazon Revenue", value: formatCurrency(kpis.amazonRevenue), change: kpis.amazonRevenueChange, icon: DollarSign, testId: "overview-kpi-amazon-revenue", color: "text-blue-600 dark:text-blue-400" },
     { label: "Shopify Revenue", value: formatCurrency(kpis.shopifyRevenue), change: kpis.shopifyRevenueChange, icon: DollarSign, testId: "overview-kpi-shopify-revenue", color: "text-green-600 dark:text-green-400" },
     { label: "Faire Revenue", value: formatCurrency(kpis.faireRevenue), change: kpis.faireRevenueChange, icon: DollarSign, testId: "overview-kpi-faire-revenue", color: "text-purple-600 dark:text-purple-400" },
     { label: "Total Net Profit", value: formatCurrency(kpis.totalNetProfit), change: kpis.totalNetProfitChange, icon: PiggyBank, testId: "overview-kpi-net-profit", color: "" },
     { label: "Total Units", value: formatNumber(kpis.totalUnits), change: kpis.totalUnitsChange, icon: Package, testId: "overview-kpi-total-units", color: "" },
-  ];
+  ] : [];
 
   function renderCellValue(product: UnifiedProductRow, key: string) {
     switch (key) {
@@ -159,42 +154,48 @@ export function OverviewTab({ dateRange }: Props) {
           </div>
         </CardHeader>
         <CardContent className="px-2 pb-3">
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={heroData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-              <XAxis dataKey="week" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={40} />
-              <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
-              <Tooltip content={({ active, payload, label }) => {
-                if (!active || !payload?.length) return null;
-                const d = payload[0]?.payload;
-                return (
-                  <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
-                    <p className="font-medium mb-1 text-foreground">{label}</p>
-                    <p className="tabular-nums" style={{ color: CHANNEL_COLORS.amazon }}>Amazon: {formatCurrency(d?.amazonRevenue)}</p>
-                    <p className="tabular-nums" style={{ color: CHANNEL_COLORS.shopify_dtc }}>Shopify: {formatCurrency(d?.shopifyRevenue)}</p>
-                    <p className="tabular-nums" style={{ color: CHANNEL_COLORS.faire }}>Faire: {formatCurrency(d?.faireRevenue)}</p>
-                    <p className="tabular-nums font-medium text-foreground mt-1 border-t border-border pt-1">Total: {formatCurrency(d?.totalRevenue)}</p>
-                    <p className="tabular-nums text-emerald-500">Net Profit: {d?.totalNetProfit != null ? formatCurrency(d.totalNetProfit) : "—"}</p>
-                  </div>
-                );
-              }} />
-              <Legend verticalAlign="top" height={28} iconType="plainline" formatter={(value: string) => {
-                const labels: Record<string, string> = { amazonRevenue: "Amazon", shopifyRevenue: "Shopify DTC", faireRevenue: "Faire", totalNetProfit: "Net Profit" };
-                return <span className="text-xs text-muted-foreground">{labels[value] ?? value}</span>;
-              }} />
-              <Bar yAxisId="left" dataKey="amazonRevenue" fill={CHANNEL_COLORS.amazon} fillOpacity={0.85} stackId="rev" name="amazonRevenue" />
-              <Bar yAxisId="left" dataKey="shopifyRevenue" fill={CHANNEL_COLORS.shopify_dtc} fillOpacity={0.85} stackId="rev" name="shopifyRevenue" />
-              <Bar yAxisId="left" dataKey="faireRevenue" fill={CHANNEL_COLORS.faire} fillOpacity={0.85} stackId="rev" name="faireRevenue" radius={[2, 2, 0, 0]} />
-              <Line yAxisId="right" type="monotone" dataKey="totalNetProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="totalNetProfit" connectNulls />
-            </ComposedChart>
-          </ResponsiveContainer>
+          {heroData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={320}>
+              <ComposedChart data={heroData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="week" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={40} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => formatCurrency(v, true)} tickLine={false} axisLine={false} width={60} />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0]?.payload;
+                  return (
+                    <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs max-w-[280px]">
+                      <p className="font-medium mb-1 text-foreground">{label}</p>
+                      <p className="tabular-nums" style={{ color: CHANNEL_COLORS.amazon }}>Amazon: {formatCurrency(d?.amazonRevenue)}</p>
+                      <p className="tabular-nums" style={{ color: CHANNEL_COLORS.shopify_dtc }}>Shopify: {formatCurrency(d?.shopifyRevenue)}</p>
+                      <p className="tabular-nums" style={{ color: CHANNEL_COLORS.faire }}>Faire: {formatCurrency(d?.faireRevenue)}</p>
+                      <p className="tabular-nums font-medium text-foreground mt-1 border-t border-border pt-1">Total: {formatCurrency(d?.totalRevenue)}</p>
+                      <p className="tabular-nums text-emerald-500">Net Profit: {d?.totalNetProfit != null ? formatCurrency(d.totalNetProfit) : "—"}</p>
+                    </div>
+                  );
+                }} />
+                <Legend verticalAlign="top" height={28} iconType="plainline" formatter={(value: string) => {
+                  const labels: Record<string, string> = { amazonRevenue: "Amazon", shopifyRevenue: "Shopify DTC", faireRevenue: "Faire", totalNetProfit: "Net Profit" };
+                  return <span className="text-xs text-muted-foreground">{labels[value] ?? value}</span>;
+                }} />
+                <Bar yAxisId="left" dataKey="amazonRevenue" fill={CHANNEL_COLORS.amazon} fillOpacity={0.85} stackId="rev" name="amazonRevenue" />
+                <Bar yAxisId="left" dataKey="shopifyRevenue" fill={CHANNEL_COLORS.shopify_dtc} fillOpacity={0.85} stackId="rev" name="shopifyRevenue" />
+                <Bar yAxisId="left" dataKey="faireRevenue" fill={CHANNEL_COLORS.faire} fillOpacity={0.85} stackId="rev" name="faireRevenue" radius={[2, 2, 0, 0]} />
+                <Line yAxisId="right" type="monotone" dataKey="totalNetProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="totalNetProfit" connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[320px] flex items-center justify-center">
+              <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" data-testid="overview-kpi-cards">
-        {kpiCards.map((card) => {
+        {kpiCards.length > 0 ? kpiCards.map((card) => {
           const isPositive = card.change != null ? card.change > 0 : null;
           const changeColor = isPositive === null ? "" : isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400";
           const ChangeIcon = card.change != null && card.change >= 0 ? TrendingUp : TrendingDown;
@@ -213,13 +214,15 @@ export function OverviewTab({ dateRange }: Props) {
                     <span className="tabular-nums font-medium">{card.change >= 0 ? "+" : ""}{card.change.toFixed(1)}%</span>
                   </div>
                 )}
-                {!hideChange && kpis.comparisonLabel && card.change != null && (
+                {!hideChange && kpis?.comparisonLabel && card.change != null && (
                   <p className="text-[9px] text-muted-foreground mt-0.5">{kpis.comparisonLabel}</p>
                 )}
               </CardContent>
             </Card>
           );
-        })}
+        }) : Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i}><CardContent className="p-4 h-[88px] animate-pulse" /></Card>
+        ))}
       </div>
 
       {/* Channel Mix Table */}

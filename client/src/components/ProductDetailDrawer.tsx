@@ -10,14 +10,14 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   ProductAggregate,
-  getProductWeeklyData,
-  getProductMonthlyData,
-  getShopifyProductWeekly,
-  getShopifyProductMonthly,
+  useProductDetail,
+  computeMonthlyFromWeekly,
+  computeShopifyMonthly,
   formatCurrency,
   formatPercent,
   formatWeekLabel,
   WeeklyFact,
+  ShopifyFact,
   CHANNEL_COLORS,
 } from "@/lib/data";
 
@@ -54,14 +54,21 @@ interface Props {
 export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props) {
   const [granularity, setGranularity] = useState<Granularity>("weekly");
 
-  const weeklyData = useMemo(
-    () => product ? getProductWeeklyData(product.asin, dateRange.start, dateRange.end) : [],
-    [product?.asin, dateRange]
+  const { data: detail } = useProductDetail(
+    product?.sku ?? "",
+    dateRange.start,
+    dateRange.end,
   );
 
+  // Filter weekly metrics to Amazon channel only
+  const weeklyData: WeeklyFact[] = useMemo(() => {
+    if (!detail?.weeklyMetrics) return [];
+    return detail.weeklyMetrics.filter((w: any) => w.channel === "amazon");
+  }, [detail?.weeklyMetrics]);
+
   const monthlyData = useMemo(
-    () => product ? getProductMonthlyData(product.asin, dateRange.start, dateRange.end) : [],
-    [product?.asin, dateRange]
+    () => computeMonthlyFromWeekly(weeklyData),
+    [weeklyData]
   );
 
   const chartRows = useMemo(() => {
@@ -244,14 +251,45 @@ export function ShopifyDetailDrawer({ product, channel, dateRange, onClose, open
   const [granularity, setGranularity] = useState<Granularity>("weekly");
   const channelColor = CHANNEL_COLORS[channel];
 
-  const weeklyData = useMemo(
-    () => product ? getShopifyProductWeekly(channel, product.sku, dateRange.start, dateRange.end) : [],
-    [product?.sku, channel, dateRange]
+  const { data: detail } = useProductDetail(
+    product?.sku ?? "",
+    dateRange.start,
+    dateRange.end,
   );
 
+  // Filter weekly metrics to this channel and adapt to ShopifyFact shape
+  const weeklyData: ShopifyFact[] = useMemo(() => {
+    if (!detail?.weeklyMetrics) return [];
+    return detail.weeklyMetrics
+      .filter((w: any) => w.channel === channel)
+      .map((w: any): ShopifyFact => ({
+        channel: w.channel,
+        sku: w.sku,
+        productTitle: w.productTitle ?? "",
+        weekStartDate: w.weekStartDate,
+        revenue: w.revenue ?? 0,
+        unitsSold: w.unitsSold ?? 0,
+        orderCount: w.orderCount ?? 0,
+        avgUnitPrice: w.avgUnitPrice ?? 0,
+        cogsPerUnit: w.cogsPerUnit,
+        totalCogs: w.totalCogs,
+        hasCogs: w.hasCogs ?? false,
+        paymentFees: w.totalAmazonFees != null ? Math.abs(w.totalAmazonFees) : 0,
+        netProceeds: w.netProceeds ?? w.revenue,
+        netProfit: w.netProfit,
+        feeSource: w.feeSource ?? "",
+        avgUnitsPerOrder: w.avgUnitsPerOrder ?? null,
+        revenuePerOrder: w.revenuePerOrder ?? null,
+        sessions: w.sessions ?? null,
+        conversionRate: w.conversionRate ?? null,
+        avgTimeOnPage: null,
+        activeSubscriptions: w.activeSubscriptions ?? null,
+      }));
+  }, [detail?.weeklyMetrics, channel]);
+
   const monthlyData = useMemo(
-    () => product ? getShopifyProductMonthly(channel, product.sku, dateRange.start, dateRange.end) : [],
-    [product?.sku, channel, dateRange]
+    () => computeShopifyMonthly(weeklyData),
+    [weeklyData]
   );
 
   const chartRows = useMemo(() => {

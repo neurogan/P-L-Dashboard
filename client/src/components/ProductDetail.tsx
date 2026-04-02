@@ -14,17 +14,16 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { X, Info } from "lucide-react";
+import { X, Info, Loader2 } from "lucide-react";
 import {
   ProductAggregate,
-  getProductWeeklyData,
-  getProductMonthlyData,
   formatCurrency,
   formatPercent,
   formatWeekLabel,
   WeeklyFact,
   MonthlyProductData,
 } from "@/lib/data";
+import { useProductDetail } from "@/lib/api";
 
 interface Props {
   product: ProductAggregate;
@@ -56,17 +55,74 @@ const COLORS = {
   margin: "#22c55e",      // green
 };
 
+/** Aggregate weekly rows into monthly buckets */
+function aggregateToMonthly(weeklyRows: WeeklyFact[]): MonthlyProductData[] {
+  const monthMap = new Map<string, MonthlyProductData>();
+
+  for (const w of weeklyRows) {
+    const month = w.weekStartDate.slice(0, 7); // "YYYY-MM"
+    const d = new Date(w.weekStartDate + "T00:00:00");
+    const label = d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+
+    let entry = monthMap.get(month);
+    if (!entry) {
+      entry = {
+        label,
+        month,
+        revenue: 0,
+        adSales: null,
+        organicSales: null,
+        adSpend: null,
+        totalAmazonFees: null,
+        totalCogs: null,
+        netProceeds: null,
+        netProfit: null,
+        feeSource: null,
+      };
+      monthMap.set(month, entry);
+    }
+
+    entry.revenue += w.revenue;
+    if (w.adSales != null) entry.adSales = (entry.adSales ?? 0) + w.adSales;
+    if (w.organicSales != null) entry.organicSales = (entry.organicSales ?? 0) + w.organicSales;
+    if (w.adSpend != null) entry.adSpend = (entry.adSpend ?? 0) + w.adSpend;
+    if (w.totalAmazonFees != null) entry.totalAmazonFees = (entry.totalAmazonFees ?? 0) + w.totalAmazonFees;
+    if (w.totalCogs != null) entry.totalCogs = (entry.totalCogs ?? 0) + w.totalCogs;
+    if (w.netProceeds != null) entry.netProceeds = (entry.netProceeds ?? 0) + w.netProceeds;
+    if (w.netProfit != null) entry.netProfit = (entry.netProfit ?? 0) + w.netProfit;
+
+    // Merge fee sources
+    if (w.feeSource) {
+      if (entry.feeSource === null) {
+        entry.feeSource = w.feeSource;
+      } else if (entry.feeSource !== w.feeSource) {
+        entry.feeSource = "mixed";
+      }
+    }
+  }
+
+  return Array.from(monthMap.values());
+}
+
 export function ProductDetail({ product, dateRange, onClose }: Props) {
   const [granularity, setGranularity] = useState<Granularity>("weekly");
 
-  const weeklyData = useMemo(
-    () => getProductWeeklyData(product.asin, dateRange.start, dateRange.end),
-    [product.asin, dateRange]
+  const { data: detailData, isLoading } = useProductDetail(
+    product.sku,
+    dateRange.start,
+    dateRange.end,
   );
 
-  const monthlyData = useMemo(
-    () => getProductMonthlyData(product.asin, dateRange.start, dateRange.end),
-    [product.asin, dateRange]
+  // Derive weekly data from useProductDetail response, cast to WeeklyFact shape
+  const weeklyData = useMemo<WeeklyFact[]>(() => {
+    if (!detailData?.weeklyMetrics) return [];
+    return detailData.weeklyMetrics as unknown as WeeklyFact[];
+  }, [detailData]);
+
+  // Derive monthly data by aggregating weekly rows
+  const monthlyData = useMemo<MonthlyProductData[]>(
+    () => aggregateToMonthly(weeklyData),
+    [weeklyData],
   );
 
   // Find first week with ad data
@@ -114,6 +170,34 @@ export function ProductDetail({ product, dateRange, onClose }: Props) {
   }, [weeklyData, monthlyData, granularity]);
 
   const hasAnyAdData = weeklyData.some((w) => w.hasAdData);
+
+  if (isLoading) {
+    return (
+      <Card data-testid="product-detail-panel" className="border-primary/30">
+        <CardHeader className="pb-2 pt-4 px-4 flex flex-row items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="text-sm font-semibold leading-tight">
+              {product.productTitle}
+            </CardTitle>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 flex-shrink-0"
+            onClick={onClose}
+            data-testid="btn-close-detail"
+          >
+            <X className="w-4 h-4" />
+          </Button>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          <div className="h-[300px] flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card data-testid="product-detail-panel" className="border-primary/30">
@@ -408,7 +492,7 @@ export function ProductDetail({ product, dateRange, onClose }: Props) {
                             </p>
                           )}
                           <p className="tabular-nums font-medium" style={{ color: COLORS.netProfit }}>
-                            Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "—"}
+                            Net Profit: {d?.netProfit != null ? formatCurrency(d.netProfit) : "\u2014"}
                           </p>
                           {d?.marginPct != null && (
                             <p className="tabular-nums" style={{ color: COLORS.margin }}>

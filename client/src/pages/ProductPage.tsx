@@ -14,9 +14,10 @@ import {
   ArrowLeft, TrendingUp, TrendingDown, Minus, Calculator,
 } from "lucide-react";
 import {
-  data, formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent, formatWeekLabel,
+  useMeta, useProductDetail,
+  formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent, formatWeekLabel,
   CHANNEL_COLORS, CHANNEL_LABELS, CHANNEL_BADGE_LABELS,
-  WeeklyFact, ShopifyFact, AllProduct,
+  WeeklyFact, AllProduct,
 } from "@/lib/data";
 import { UnitEconomicsDrawer } from "@/components/UnitEconomicsDrawer";
 
@@ -68,58 +69,42 @@ interface ChannelWeekly {
   reimbursement: number | null;
 }
 
-function buildProductWeeklyData(
-  product: AllProduct,
-  startDate: string,
-  endDate: string
+/**
+ * Build ChannelWeekly data from API response.
+ * weeklyMetrics contains rows from ALL channels for this SKU.
+ * adData contains per-week ad rows for this ASIN.
+ */
+function buildProductWeeklyDataFromApi(
+  weeklyMetrics: WeeklyFact[],
+  adData: any[],
 ): ChannelWeekly[] {
-  // Collect Amazon data by week
-  const amazonByWeek = new Map<string, WeeklyFact[]>();
-  if (product.asin) {
-    for (const f of data.weeklyFacts) {
-      if (f.channel !== "amazon" || f.asin !== product.asin) continue;
-      if (f.weekStartDate < startDate || f.weekEndDate > endDate) continue;
-      if (!amazonByWeek.has(f.weekStartDate)) amazonByWeek.set(f.weekStartDate, []);
-      amazonByWeek.get(f.weekStartDate)!.push(f);
-    }
+  // Group metrics by week and channel
+  const byWeekChannel = new Map<string, Map<string, WeeklyFact[]>>();
+  for (const w of weeklyMetrics) {
+    const week = w.weekStartDate;
+    if (!byWeekChannel.has(week)) byWeekChannel.set(week, new Map());
+    const channelMap = byWeekChannel.get(week)!;
+    if (!channelMap.has(w.channel)) channelMap.set(w.channel, []);
+    channelMap.get(w.channel)!.push(w);
   }
 
-  // Collect Shopify/Faire data by week
-  const shopifyByWeek = new Map<string, ShopifyFact[]>();
-  const faireByWeek = new Map<string, ShopifyFact[]>();
-  for (const f of data.shopifyFacts) {
-    if (f.sku !== product.sku) continue;
-    if (f.weekStartDate < startDate || f.weekStartDate > endDate) continue;
-    const map = f.channel === "shopify_dtc" ? shopifyByWeek : faireByWeek;
-    if (!map.has(f.weekStartDate)) map.set(f.weekStartDate, []);
-    map.get(f.weekStartDate)!.push(f);
-  }
-
-  // Collect ad data by week for this ASIN
+  // Build ad spend by week
   const adByWeek = new Map<string, number>();
-  if (product.asin) {
-    for (const w of data.adWeeklySummary) {
-      if (w.week < startDate || w.week > endDate) continue;
-      for (const ab of w.asinBreakdown) {
-        if (ab.asin === product.asin) {
-          adByWeek.set(w.week, (adByWeek.get(w.week) ?? 0) + ab.spend);
-        }
-      }
-    }
+  for (const ad of adData) {
+    const week = ad.weekStartDate;
+    adByWeek.set(week, (adByWeek.get(week) ?? 0) + (ad.spend ?? 0));
   }
 
   // Union all weeks
   const allWeeks = new Set<string>();
-  amazonByWeek.forEach((_, k) => allWeeks.add(k));
-  shopifyByWeek.forEach((_, k) => allWeeks.add(k));
-  faireByWeek.forEach((_, k) => allWeeks.add(k));
-
+  byWeekChannel.forEach((_, k) => allWeeks.add(k));
   const sorted = Array.from(allWeeks).sort();
 
   return sorted.map((week) => {
-    const amzFacts = amazonByWeek.get(week) ?? [];
-    const shopFacts = shopifyByWeek.get(week) ?? [];
-    const fairFacts = faireByWeek.get(week) ?? [];
+    const channelMap = byWeekChannel.get(week) ?? new Map<string, WeeklyFact[]>();
+    const amzFacts: WeeklyFact[] = channelMap.get("amazon") ?? [];
+    const shopFacts: WeeklyFact[] = channelMap.get("shopify_dtc") ?? [];
+    const fairFacts: WeeklyFact[] = channelMap.get("faire") ?? [];
 
     const amazonRevenue = amzFacts.reduce((s, f) => s + f.revenue, 0);
     const shopifyRevenue = shopFacts.reduce((s, f) => s + f.revenue, 0);
@@ -142,8 +127,8 @@ function buildProductWeeklyData(
     // Fees
     const feeAmzW = amzFacts.filter((f) => f.totalAmazonFees != null);
     const amazonFees = feeAmzW.length > 0 ? feeAmzW.reduce((s, f) => s + (f.totalAmazonFees ?? 0), 0) : null;
-    const shopifyFees = shopFacts.reduce((s, f) => s + f.paymentFees, 0);
-    const faireFees = fairFacts.reduce((s, f) => s + f.paymentFees, 0);
+    const shopifyFees = shopFacts.reduce((s, f) => s + ((f as any).paymentFees ?? (f.totalAmazonFees != null ? Math.abs(f.totalAmazonFees) : 0)), 0);
+    const faireFees = fairFacts.reduce((s, f) => s + ((f as any).paymentFees ?? (f.totalAmazonFees != null ? Math.abs(f.totalAmazonFees) : 0)), 0);
 
     // COGS
     const cogsAmzW = amzFacts.filter((f) => f.totalCogs != null);
@@ -375,23 +360,57 @@ export default function ProductPage() {
   const [, setLocation] = useLocation();
   const sku = params?.sku ? decodeURIComponent(params.sku) : null;
 
-  const maxDate = data.dateRange.newest;
-  const minDate = data.dateRange.oldest;
+  const { data: meta } = useMeta();
+  const maxDate = meta?.["dateRange.newest"] ?? "";
+  const minDate = meta?.["dateRange.oldest"] ?? "";
 
-  const [dateRange, setDateRange] = useState({ start: minDate, end: maxDate });
-  const [activeChannels, setActiveChannels] = useState<Set<ChannelKey>>(new Set(["amazon", "shopify_dtc", "faire"]));
+  const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
+  const effectiveDateRange = dateRange ?? { start: minDate, end: maxDate };
+
+  // Initialize dateRange once meta loads
+  if (minDate && maxDate && !dateRange) {
+    setDateRange({ start: minDate, end: maxDate });
+  }
+
+  const [activeChannels, setActiveChannels] = useState<Set<ChannelKey>>(new Set<ChannelKey>(["amazon", "shopify_dtc", "faire"]));
   const [timeScale, setTimeScale] = useState<"weekly" | "monthly">("weekly");
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const product = useMemo(() => {
-    if (!sku) return null;
-    return data.allProducts.find((p) => p.sku === sku) ?? null;
-  }, [sku]);
+  // Fetch product detail from API
+  const { data: detail, isLoading } = useProductDetail(
+    sku ?? "",
+    effectiveDateRange.start,
+    effectiveDateRange.end,
+  );
+
+  // Construct AllProduct shape from API response
+  const product: AllProduct | null = useMemo(() => {
+    if (!detail?.product) return null;
+    const p = detail.product;
+    const channels: string[] = [];
+    const channelSet = new Set<string>();
+    for (const w of (detail.weeklyMetrics ?? [])) {
+      channelSet.add((w as any).channel);
+    }
+    if (channelSet.has("amazon") || p.asin) channels.push("amazon");
+    if (channelSet.has("shopify_dtc")) channels.push("shopify_dtc");
+    if (channelSet.has("faire")) channels.push("faire");
+
+    return {
+      sku: p.sku,
+      asin: p.asin ?? null,
+      productTitle: p.productTitle,
+      channels,
+    };
+  }, [detail]);
 
   const weeklyData = useMemo(() => {
-    if (!product) return [];
-    return buildProductWeeklyData(product, dateRange.start, dateRange.end);
-  }, [product, dateRange]);
+    if (!detail?.weeklyMetrics) return [];
+    return buildProductWeeklyDataFromApi(
+      detail.weeklyMetrics as WeeklyFact[],
+      detail.adData ?? [],
+    );
+  }, [detail]);
 
   const monthlyData = useMemo(() => aggregateToMonthly(weeklyData), [weeklyData]);
   const rawChartData = useMemo(() => timeScale === "weekly" ? weeklyData : monthlyData, [timeScale, weeklyData, monthlyData]);
@@ -473,21 +492,33 @@ export default function ProductPage() {
     };
   }, [weeklyData]);
 
-  const presets = useMemo(() => [
-    { label: "Last Week", start: subtractWeeks(maxDate, 1), end: maxDate },
-    { label: "4W", start: subtractWeeks(maxDate, 4), end: maxDate },
-    { label: "12W", start: subtractWeeks(maxDate, 12), end: maxDate },
-    { label: "26W", start: subtractWeeks(maxDate, 26), end: maxDate },
-    { label: "YTD", start: getYTDStart(maxDate), end: maxDate },
-    { label: "All", start: minDate, end: maxDate },
-  ], [minDate, maxDate]);
+  const presets = useMemo(() => {
+    if (!maxDate || !minDate) return [];
+    return [
+      { label: "Last Week", start: subtractWeeks(maxDate, 1), end: maxDate },
+      { label: "4W", start: subtractWeeks(maxDate, 4), end: maxDate },
+      { label: "12W", start: subtractWeeks(maxDate, 12), end: maxDate },
+      { label: "26W", start: subtractWeeks(maxDate, 26), end: maxDate },
+      { label: "YTD", start: getYTDStart(maxDate), end: maxDate },
+      { label: "All", start: minDate, end: maxDate },
+    ];
+  }, [minDate, maxDate]);
 
   const activePreset = useMemo(() =>
-    presets.find((p) => p.start === dateRange.start && p.end === dateRange.end)?.label,
-    [presets, dateRange]
+    presets.find((p) => p.start === effectiveDateRange.start && p.end === effectiveDateRange.end)?.label,
+    [presets, effectiveDateRange]
   );
 
-  if (!product) {
+  // Loading state
+  if (!minDate || !maxDate) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!sku || (detail && !detail.product)) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
@@ -497,6 +528,14 @@ export default function ProductPage() {
             <ArrowLeft className="w-4 h-4 mr-2" /> Back to Overview
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  if (isLoading || !product) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-sm text-muted-foreground animate-pulse">Loading product data...</div>
       </div>
     );
   }
@@ -926,7 +965,7 @@ export default function ProductPage() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         product={product}
-        dateRange={dateRange}
+        dateRange={effectiveDateRange}
         weeklyData={weeklyData}
       />
     </div>

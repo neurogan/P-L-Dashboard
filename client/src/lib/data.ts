@@ -1,6 +1,31 @@
-import dashboardData from "../data/dashboard-data.json";
+/**
+ * Data types, formatting helpers, constants, pure computation functions,
+ * and React Query hooks for all dashboard API endpoints.
+ *
+ * All hooks use apiRequest from queryClient for __PORT_5000__ proxy support.
+ * No static JSON is imported — all data comes from PostgreSQL via /api/* endpoints.
+ */
 
-// ─── Raw types matching the JSON bundle ───────────────────────────────────
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "./queryClient";
+
+// ─── API fetch helpers ────────────────────────────────────────────────────
+
+async function fetchApi<T>(url: string): Promise<T> {
+  const res = await apiRequest("GET", url);
+  return res.json();
+}
+
+function buildUrl(path: string, params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== "") search.set(k, v);
+  }
+  const qs = search.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+// ─── Raw types (legacy, kept for component compatibility) ─────────────────
 
 export interface Product {
   asin: string;
@@ -50,7 +75,6 @@ export interface WeeklyFact {
   netProfitComplete: boolean;
   organicSales: number | null;
   channel: string;
-  // New V4 fields
   b2bRevenue: number | null;
   b2bUnits: number | null;
   b2bOrders: number | null;
@@ -79,7 +103,6 @@ export interface ShopifyFact {
   netProceeds: number;
   netProfit: number | null;
   feeSource: string;
-  // New V4 fields
   avgUnitsPerOrder: number | null;
   revenuePerOrder: number | null;
   sessions: number | null;
@@ -130,6 +153,7 @@ export interface HeroChartRow {
   netProceeds: number | null;
   netProfit: number | null;
   feeSource: "settlement" | "estimated" | null;
+  reimbursement?: number | null;
 }
 
 export interface AdAsinBreakdown {
@@ -185,9 +209,635 @@ export interface DashboardData {
   allProducts: AllProduct[];
 }
 
-export const data: DashboardData = dashboardData as unknown as DashboardData;
+// ─── Internal raw API response shapes ────────────────────────────────────
+
+/** Raw shape returned by /api/overview */
+interface OverviewApiResponse {
+  totals: {
+    revenue: number;
+    units: number;
+    orders: number;
+    netProfit: number;
+    amazonFees: number;
+    adSpend: number;
+    cogs: number;
+    paymentFees: number;
+  };
+  byChannel: Record<string, {
+    revenue: number;
+    units: number;
+    orders: number;
+    netProfit: number;
+  }>;
+  dateRange: { startDate: string; endDate: string };
+}
+
+/** Raw shape returned by /api/products rows */
+interface RawProductRow {
+  sku: string;
+  asin: string | null;
+  productTitle: string;
+  channel: string;
+  revenue: number;
+  units: number;
+  orders: number;
+  amazonFees: number;
+  paymentFees: number;
+  netProceeds: number;
+  cogs: number;
+  adSpend: number;
+  adSales: number;
+  netProfit: number;
+  margin: number | null;
+  tacos: number | null;
+  avgPrice: number | null;
+  b2bRevenue: number;
+  b2cRevenue: number;
+  b2bUnits: number;
+  refundUnits: number;
+}
+
+/** Raw weekly chart row from /api/weekly-chart */
+interface RawWeeklyChartRow {
+  week: string;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  totalRevenue: number;
+  totalNetProfit: number;
+  totalUnits: number;
+  totalOrders: number;
+  totalAdSpend: number;
+  totalAdSales: number;
+}
+
+// ─── Normalization helpers ────────────────────────────────────────────────
+
+/** Transform /api/overview nested response → flat OverviewData shape */
+function normalizeOverview(raw: OverviewApiResponse): {
+  totalRevenue: number;
+  totalUnits: number;
+  totalOrders: number;
+  totalNetProfit: number | null;
+  totalAmazonFees: number | null;
+  totalAdSpend: number | null;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  amazonUnits: number;
+  shopifyUnits: number;
+  faireUnits: number;
+} {
+  const { totals, byChannel } = raw;
+  const amazon = byChannel?.["amazon"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  const shopify = byChannel?.["shopify_dtc"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  const faire = byChannel?.["faire"] ?? { revenue: 0, units: 0, orders: 0, netProfit: 0 };
+  return {
+    totalRevenue: totals.revenue ?? 0,
+    totalUnits: totals.units ?? 0,
+    totalOrders: totals.orders ?? 0,
+    totalNetProfit: totals.netProfit ?? null,
+    totalAmazonFees: totals.amazonFees ?? null,
+    totalAdSpend: totals.adSpend ?? null,
+    amazonRevenue: amazon.revenue ?? 0,
+    shopifyRevenue: shopify.revenue ?? 0,
+    faireRevenue: faire.revenue ?? 0,
+    amazonUnits: amazon.units ?? 0,
+    shopifyUnits: shopify.units ?? 0,
+    faireUnits: faire.units ?? 0,
+  };
+}
+
+/** Normalize a raw /api/products row → ProductAggregate */
+function rawToProductAggregate(r: RawProductRow): ProductAggregate {
+  const unitsSold = r.units ?? 0;
+  const orderCount = r.orders ?? 0;
+  const revenue = r.revenue ?? 0;
+  const adSpend = r.adSpend != null && r.adSpend !== 0 ? r.adSpend : null;
+  const adSales = r.adSales != null && r.adSales !== 0 ? r.adSales : null;
+  const totalCogs = r.cogs != null && r.cogs !== 0 ? r.cogs : null;
+  const totalAmazonFees = r.amazonFees != null && r.amazonFees !== 0 ? r.amazonFees : null;
+  const netProceeds = r.netProceeds != null ? r.netProceeds : null;
+  const netProfit = r.netProfit != null ? r.netProfit : null;
+  const marginPct = r.margin != null ? r.margin / 100 : null;
+  const tacos = r.tacos != null ? r.tacos / 100 : null;
+  const acos = adSpend != null && adSales != null && adSales > 0 ? adSpend / adSales : null;
+
+  return {
+    asin: r.asin ?? "",
+    sku: r.sku,
+    productTitle: r.productTitle,
+    hasCogs: totalCogs != null && totalCogs > 0,
+    revenue,
+    totalCogs,
+    totalAmazonFees,
+    netProceeds,
+    adSpend,
+    adSales,
+    netProfit,
+    marginPct,
+    unitsSold,
+    avgPrice: r.avgPrice ?? (unitsSold > 0 ? revenue / unitsSold : 0),
+    feeSource: null,
+    orderCount,
+    refundAmount: null,
+    tacos,
+    acos,
+    avgUnitsPerOrder: orderCount > 0 ? unitsSold / orderCount : null,
+    revenuePerOrder: orderCount > 0 ? revenue / orderCount : null,
+    refundRate: null,
+    b2bRevenue: r.b2bRevenue != null && r.b2bRevenue !== 0 ? r.b2bRevenue : null,
+    b2cRevenue: r.b2cRevenue != null && r.b2cRevenue !== 0 ? r.b2cRevenue : null,
+    b2bUnits: r.b2bUnits != null && r.b2bUnits !== 0 ? r.b2bUnits : null,
+  };
+}
+
+/** Normalize a raw /api/products row → ShopifyProductAggregate */
+function rawToShopifyAggregate(r: RawProductRow): ShopifyProductAggregate {
+  const unitsSold = r.units ?? 0;
+  const orderCount = r.orders ?? 0;
+  const revenue = r.revenue ?? 0;
+  const paymentFees = r.paymentFees ?? 0;
+  const totalCogs = r.cogs != null && r.cogs !== 0 ? r.cogs : null;
+  const netProceeds = r.netProceeds ?? revenue - paymentFees;
+  const netProfit = r.netProfit != null ? r.netProfit : null;
+  const marginPct = r.margin != null ? r.margin / 100 : null;
+
+  return {
+    sku: r.sku,
+    productTitle: r.productTitle,
+    revenue,
+    paymentFees,
+    totalCogs,
+    netProceeds,
+    netProfit,
+    marginPct,
+    unitsSold,
+    orderCount,
+    avgPrice: r.avgPrice ?? (unitsSold > 0 ? revenue / unitsSold : 0),
+    hasCogs: totalCogs != null && totalCogs > 0,
+  };
+}
+
+/** Build UnifiedProductRow[] by aggregating /api/products rows across channels */
+function buildUnifiedProducts(rows: RawProductRow[]): UnifiedProductRow[] {
+  const map: Record<string, {
+    sku: string; asin: string | null; productTitle: string;
+    channels: string[]; amazonRev: number; shopifyRev: number; faireRev: number;
+    totalRev: number; totalUnits: number; totalOrders: number;
+    netProfit: number | null;
+  }> = {};
+
+  for (const r of rows) {
+    if (!map[r.sku]) {
+      map[r.sku] = {
+        sku: r.sku, asin: r.asin, productTitle: r.productTitle,
+        channels: [], amazonRev: 0, shopifyRev: 0, faireRev: 0,
+        totalRev: 0, totalUnits: 0, totalOrders: 0, netProfit: null,
+      };
+    }
+    const u = map[r.sku];
+    if (!u.channels.includes(r.channel)) u.channels.push(r.channel);
+    if (r.channel === "amazon") u.amazonRev += r.revenue ?? 0;
+    else if (r.channel === "shopify_dtc") u.shopifyRev += r.revenue ?? 0;
+    else if (r.channel === "faire") u.faireRev += r.revenue ?? 0;
+    u.totalRev += r.revenue ?? 0;
+    u.totalUnits += r.units ?? 0;
+    u.totalOrders += r.orders ?? 0;
+    if (r.netProfit != null) u.netProfit = (u.netProfit ?? 0) + r.netProfit;
+    if (r.asin && !u.asin) u.asin = r.asin;
+  }
+
+  return Object.values(map)
+    .map((u) => ({
+      ...u,
+      marginPct: u.netProfit != null && u.totalRev > 0 ? u.netProfit / u.totalRev : null,
+    }))
+    .sort((a, b) => b.totalRev - a.totalRev);
+}
+
+// ─── React Query hooks ────────────────────────────────────────────────────
+
+/**
+ * useMeta — derive date range bounds from /api/weekly-chart (no date filter).
+ * Returns { "dateRange.oldest", "dateRange.newest", generatedAt, meta }.
+ */
+export function useMeta() {
+  return useQuery<Record<string, string>>({
+    queryKey: ["/api/meta"],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      const weeks = rows.map((r) => r.week).sort();
+      const oldest = weeks[0] ?? "";
+      const newest = weeks[weeks.length - 1] ?? "";
+      return {
+        "dateRange.oldest": oldest,
+        "dateRange.newest": newest,
+        generatedAt: new Date().toISOString(),
+        meta: JSON.stringify({}),
+      };
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * useProductsCatalog — GET /api/products-catalog (all products, no date filter).
+ */
+export function useProductsCatalog() {
+  return useQuery<AllProduct[]>({
+    queryKey: ["/api/products-catalog"],
+    queryFn: () => fetchApi("/api/products-catalog"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * useOverview — GET /api/overview, transform nested response to flat shape.
+ */
+export function useOverview(startDate?: string, endDate?: string) {
+  return useQuery<{
+    totalRevenue: number;
+    totalUnits: number;
+    totalOrders: number;
+    totalNetProfit: number | null;
+    totalAmazonFees: number | null;
+    totalAdSpend: number | null;
+    amazonRevenue: number;
+    shopifyRevenue: number;
+    faireRevenue: number;
+    amazonUnits: number;
+    shopifyUnits: number;
+    faireUnits: number;
+  }>({
+    queryKey: ["/api/overview", { startDate, endDate }],
+    queryFn: async () => {
+      const raw = await fetchApi<OverviewApiResponse>(
+        buildUrl("/api/overview", { startDate, endDate })
+      );
+      return normalizeOverview(raw);
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useChannelMix — GET /api/channel-mix with date filters.
+ */
+export function useChannelMix(startDate?: string, endDate?: string) {
+  return useQuery<ChannelMixRow[]>({
+    queryKey: ["/api/channel-mix", { startDate, endDate }],
+    queryFn: async () => {
+      const rows = await fetchApi<any[]>(
+        buildUrl("/api/channel-mix", { startDate, endDate })
+      );
+      return rows.map((r) => ({
+        channel: r.channel ?? "",
+        label: r.channel ?? "",
+        revenue: r.revenue ?? 0,
+        pctOfTotal: r.pctOfTotal ?? 0,
+        orders: r.orders ?? 0,
+        units: r.units ?? 0,
+        netProfit: r.netProfit ?? null,
+      }));
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useProducts — GET /api/products with optional channel filter.
+ * Returns ProductAggregate[] with normalized field names.
+ */
+export function useProducts(
+  startDate?: string,
+  endDate?: string,
+  channel?: string,
+  sortBy?: string,
+  sortDir?: string,
+) {
+  return useQuery<ProductAggregate[]>({
+    queryKey: ["/api/products", { startDate, endDate, channel, sortBy, sortDir }],
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate, channel })
+      );
+      let result = rows
+        .filter((r) => channel ? r.channel === channel : true)
+        .map(rawToProductAggregate);
+      if (sortBy) {
+        result = result.sort((a, b) => {
+          const aVal = (a as any)[sortBy] ?? -Infinity;
+          const bVal = (b as any)[sortBy] ?? -Infinity;
+          return sortDir === "asc" ? aVal - bVal : bVal - aVal;
+        });
+      }
+      return result;
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useShopifyProducts — GET /api/products?channel=X.
+ * Returns ShopifyProductAggregate[] for Shopify DTC or Faire channel.
+ */
+export function useShopifyProducts(channel: string, startDate?: string, endDate?: string) {
+  return useQuery<ShopifyProductAggregate[]>({
+    queryKey: ["/api/products", { startDate, endDate, channel }],
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate, channel })
+      );
+      return rows
+        .filter((r) => r.channel === channel)
+        .map(rawToShopifyAggregate);
+    },
+    enabled: !!channel,
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useUnifiedProducts — GET /api/products (all channels), aggregate by SKU.
+ * Builds cross-channel summary for the Overview tab product table.
+ */
+export function useUnifiedProducts(startDate?: string, endDate?: string) {
+  return useQuery<UnifiedProductRow[]>({
+    queryKey: ["/api/unified-products", { startDate, endDate }],
+    queryFn: async () => {
+      const rows = await fetchApi<RawProductRow[]>(
+        buildUrl("/api/products", { startDate, endDate })
+      );
+      return buildUnifiedProducts(rows);
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useWeeklyChart — GET /api/weekly-chart with optional date filters.
+ * Returns UnifiedHeroRow[] (channel revenue + totals per week).
+ */
+export function useWeeklyChart(startDate?: string, endDate?: string, channel?: string) {
+  return useQuery<UnifiedHeroRow[]>({
+    queryKey: ["/api/weekly-chart", { startDate, endDate, channel }],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>(
+        buildUrl("/api/weekly-chart", { startDate, endDate })
+      );
+      return rows.map((r) => ({
+        week: r.week,
+        amazonRevenue: r.amazonRevenue ?? 0,
+        shopifyRevenue: r.shopifyRevenue ?? 0,
+        faireRevenue: r.faireRevenue ?? 0,
+        totalRevenue: r.totalRevenue ?? 0,
+        amazonUnits: 0,
+        shopifyUnits: 0,
+        faireUnits: 0,
+        totalUnits: r.totalUnits ?? 0,
+        amazonOrders: 0,
+        shopifyOrders: 0,
+        faireOrders: 0,
+        totalOrders: r.totalOrders ?? 0,
+        amazonNetProfit: null,
+        shopifyNetProfit: null,
+        faireNetProfit: null,
+        totalNetProfit: r.totalNetProfit ?? null,
+      }));
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useHeroChart — GET /api/weekly-chart (no date filter) for the main hero chart.
+ * Returns HeroChartRow[] with total revenue + net profit per week.
+ */
+export function useHeroChart() {
+  return useQuery<HeroChartRow[]>({
+    queryKey: ["/api/hero-chart"],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      return rows.map((r) => ({
+        week: r.week,
+        revenue: r.totalRevenue ?? 0,
+        units: r.totalUnits ?? 0,
+        orders: r.totalOrders ?? 0,
+        totalAmazonFees: null,
+        promotions: null,
+        refunds: null,
+        totalCogs: null,
+        adSpend: r.totalAdSpend ?? null,
+        adSales: r.totalAdSales ?? null,
+        organicSales: null,
+        netProceeds: null,
+        netProfit: r.totalNetProfit ?? null,
+        feeSource: null,
+        reimbursement: null,
+      }));
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useChannelHero — GET /api/weekly-chart and filter/project to a single channel.
+ * Returns rows with { week, revenue, units, orders, netProfit, cogs }.
+ */
+export function useChannelHero(channel: string) {
+  return useQuery<Array<{ week: string; rawWeek?: string; revenue: number; units: number; orders: number; netProfit: number | null; cogs: number | null }>>({
+    queryKey: ["/api/channel-hero", channel],
+    queryFn: async () => {
+      const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
+      return rows.map((r) => {
+        let revenue = 0;
+        if (channel === "amazon") revenue = r.amazonRevenue ?? 0;
+        else if (channel === "shopify_dtc") revenue = r.shopifyRevenue ?? 0;
+        else if (channel === "faire") revenue = r.faireRevenue ?? 0;
+        else revenue = r.totalRevenue ?? 0;
+
+        // Estimate per-channel net profit proportionally from total
+        let netProfit: number | null = null;
+        if (r.totalRevenue && r.totalRevenue > 0 && r.totalNetProfit != null) {
+          netProfit = (revenue / r.totalRevenue) * r.totalNetProfit;
+        }
+
+        return {
+          week: r.week,
+          rawWeek: r.week,
+          revenue,
+          units: 0,
+          orders: 0,
+          netProfit,
+          cogs: null,
+        };
+      });
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useProductDetail — GET /api/product/:sku with date filters.
+ */
+export function useProductDetail(sku: string, startDate?: string, endDate?: string) {
+  return useQuery<{
+    product: any;
+    weeklyMetrics: WeeklyFact[];
+    adData: any[];
+    cogsPeriods: any[];
+  }>({
+    queryKey: ["/api/product", sku, { startDate, endDate }],
+    queryFn: () => fetchApi(buildUrl(`/api/product/${encodeURIComponent(sku)}`, { startDate, endDate })),
+    enabled: !!sku,
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useAdvertising — GET /api/advertising, transform {kpis, weeklyTrend, asinBreakdown}.
+ */
+export function useAdvertising(startDate?: string, endDate?: string) {
+  return useQuery<{
+    totalSpend: number;
+    totalAdSales: number;
+    acos: number;
+    totalClicks: number;
+    totalImpressions: number;
+    ctr: number;
+    cpc: number;
+    totalOrders: number;
+    weeklyData: { week: string; spend: number; acos: number }[];
+    asinBreakdown: AdAsinAggregate[];
+    hasData: boolean;
+  }>({
+    queryKey: ["/api/advertising", { startDate, endDate }],
+    queryFn: async () => {
+      const raw = await fetchApi<any>(
+        buildUrl("/api/advertising", { startDate, endDate })
+      );
+      const kpis = raw.kpis ?? {};
+      const weeklyTrend: any[] = raw.weeklyTrend ?? [];
+      const asinBreakdown: any[] = raw.asinBreakdown ?? [];
+
+      return {
+        totalSpend: kpis.totalSpend ?? 0,
+        totalAdSales: kpis.totalAdSales ?? 0,
+        acos: kpis.acos ?? 0,
+        totalClicks: kpis.totalClicks ?? 0,
+        totalImpressions: kpis.totalImpressions ?? 0,
+        ctr: kpis.ctr ?? 0,
+        cpc: kpis.cpc ?? 0,
+        totalOrders: weeklyTrend.reduce((s: number, r: any) => s + (r.totalOrders ?? 0), 0),
+        weeklyData: weeklyTrend.map((r: any) => ({
+          week: r.week,
+          spend: r.totalSpend ?? 0,
+          acos: r.acos ?? 0,
+        })),
+        asinBreakdown: asinBreakdown.map((r: any) => ({
+          asin: r.asin ?? "",
+          sku: r.sku ?? "",
+          productTitle: r.productTitle ?? "",
+          spend: r.spend ?? 0,
+          adSales: r.adSales ?? 0,
+          impressions: r.impressions ?? 0,
+          clicks: r.clicks ?? 0,
+          ctr: r.ctr ?? 0,
+          cpc: r.cpc ?? 0,
+          orders: r.orders ?? 0,
+          acos: r.acos ?? 0,
+          tacos: r.tacos ?? 0,
+          totalRevenue: r.totalRevenue ?? 0,
+        })),
+        hasData: asinBreakdown.length > 0,
+      };
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * usePareto — GET /api/pareto, returns the products array from the response.
+ */
+export function usePareto(startDate?: string, endDate?: string) {
+  return useQuery<ParetoProduct[]>({
+    queryKey: ["/api/pareto", { startDate, endDate }],
+    queryFn: async () => {
+      const raw = await fetchApi<any>(
+        buildUrl("/api/pareto", { startDate, endDate })
+      );
+      // Server returns { products, summary } — extract products array
+      const rows: any[] = Array.isArray(raw) ? raw : (raw.products ?? []);
+      return rows.map((r) => ({
+        sku: r.sku ?? "",
+        productTitle: r.productTitle ?? "",
+        revenue: r.revenue ?? 0,
+        netProfit: r.netProfit ?? null,
+        hasCogs: r.cogs != null && r.cogs > 0,
+        channels: r.channels ?? [],
+        // Preserve extra fields used by ParetoTab
+        value: r.value,
+        units: r.units,
+        cogs: r.cogs,
+        adSpend: r.adSpend,
+        margin: r.margin,
+        pctOfTotal: r.pctOfTotal,
+        cumulativePct: r.cumulativePct,
+        tier: r.tier,
+        rank: r.rank,
+      }));
+    },
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useCogsPeriods — GET /api/cogs-periods with optional SKU filter.
+ */
+export function useCogsPeriods(sku?: string) {
+  return useQuery<any[]>({
+    queryKey: ["/api/cogs-periods", { sku }],
+    queryFn: () => fetchApi(buildUrl("/api/cogs-periods", { sku })),
+    staleTime: 60000,
+  });
+}
+
+/**
+ * useProductWeeklyRevenue — look up SKU from catalog, then GET /api/product/:sku.
+ * Returns { [weekDate]: revenue } for the given ASIN.
+ */
+export function useProductWeeklyRevenue(asin: string | null) {
+  const { data: catalog } = useProductsCatalog();
+
+  const sku = asin && catalog
+    ? (catalog.find((p) => p.asin === asin)?.sku ?? null)
+    : null;
+
+  return useQuery<Record<string, number>>({
+    queryKey: ["/api/product-weekly-revenue", asin],
+    queryFn: async () => {
+      if (!sku) return {};
+      const detail = await fetchApi<{ weeklyMetrics: any[] }>(
+        `/api/product/${encodeURIComponent(sku)}`
+      );
+      const revMap: Record<string, number> = {};
+      for (const row of detail.weeklyMetrics ?? []) {
+        const week = row.weekStartDate ?? row.week;
+        const ch = row.channel ?? "";
+        if (week && ch === "amazon") {
+          revMap[week] = (revMap[week] ?? 0) + (row.revenue ?? 0);
+        }
+      }
+      return revMap;
+    },
+    enabled: !!asin && !!sku,
+    staleTime: 60000,
+  });
+}
 
 // ─── Channel colors ──────────────────────────────────────────────────────
+
 export const CHANNEL_COLORS = {
   amazon: "#2563eb",
   shopify_dtc: "#16a34a",
@@ -207,6 +857,7 @@ export const CHANNEL_BADGE_LABELS: Record<string, string> = {
 };
 
 // ─── 29-product fixed color palette ──────────────────────────────────────
+
 export const PRODUCT_COLORS = [
   "#e63946", "#457b9d", "#f4a261", "#2a9d8f", "#e76f51",
   "#264653", "#a8dadc", "#f1faee", "#606c38", "#dda15e",
@@ -216,14 +867,16 @@ export const PRODUCT_COLORS = [
   "#8338ec", "#3a86ff", "#ff006e", "#06d6a0",
 ];
 
-// Assign color deterministically by ASIN index in data.products
-const asinColorMap = new Map<string, string>();
-data.products.forEach((p, i) => {
-  asinColorMap.set(p.asin, PRODUCT_COLORS[i % PRODUCT_COLORS.length]);
-});
-
-export function getProductColor(asin: string): string {
-  return asinColorMap.get(asin) ?? PRODUCT_COLORS[0];
+export function getProductColor(asin: string, productList?: { asin: string }[]): string {
+  if (productList) {
+    const idx = productList.findIndex((p) => p.asin === asin);
+    if (idx >= 0) return PRODUCT_COLORS[idx % PRODUCT_COLORS.length];
+  }
+  let hash = 0;
+  for (let i = 0; i < asin.length; i++) {
+    hash = ((hash << 5) - hash + asin.charCodeAt(i)) | 0;
+  }
+  return PRODUCT_COLORS[Math.abs(hash) % PRODUCT_COLORS.length];
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────
@@ -274,7 +927,7 @@ export function formatWeekLabel(dateStr: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// ─── Amazon Profitability aggregation ──────────────────────────────────
+// ─── Aggregate types ──────────────────────────────────────────────────────
 
 export interface ProductAggregate {
   asin: string;
@@ -296,7 +949,6 @@ export interface ProductAggregate {
   refundAmount: number | null;
   tacos: number | null;
   acos: number | null;
-  // V4 expanded row fields (aggregated)
   avgUnitsPerOrder: number | null;
   revenuePerOrder: number | null;
   refundRate: number | null;
@@ -305,146 +957,96 @@ export interface ProductAggregate {
   b2bUnits: number | null;
 }
 
-export function aggregateProducts(
-  facts: WeeklyFact[],
-  startDate?: string,
-  endDate?: string
-): ProductAggregate[] {
-  const filtered = facts.filter((f) => {
-    if (f.channel !== "amazon") return false;
-    if (startDate && f.weekStartDate < startDate) return false;
-    if (endDate && f.weekEndDate > endDate) return false;
-    return true;
-  });
-
-  const byProduct = new Map<string, WeeklyFact[]>();
-  for (const f of filtered) {
-    if (!byProduct.has(f.asin)) byProduct.set(f.asin, []);
-    byProduct.get(f.asin)!.push(f);
-  }
-
-  const results: ProductAggregate[] = [];
-  for (const [asin, weeks] of byProduct) {
-    const first = weeks[0];
-    const revenue = weeks.reduce((s, w) => s + w.revenue, 0);
-    const unitsSold = weeks.reduce((s, w) => s + w.unitsSold, 0);
-    const orderCount = weeks.reduce((s, w) => s + w.orderCount, 0);
-    const hasCogs = weeks.some((w) => w.hasCogs);
-
-    const cogsWeeks = weeks.filter((w) => w.totalCogs != null);
-    const totalCogs = cogsWeeks.length > 0 ? cogsWeeks.reduce((s, w) => s + (w.totalCogs ?? 0), 0) : null;
-
-    const feeWeeks = weeks.filter((w) => w.totalAmazonFees != null);
-    const totalAmazonFees = feeWeeks.length > 0 ? feeWeeks.reduce((s, w) => s + (w.totalAmazonFees ?? 0), 0) : null;
-
-    const npWeeks = weeks.filter((w) => w.netProceeds != null);
-    const netProceeds = npWeeks.length > 0 ? npWeeks.reduce((s, w) => s + (w.netProceeds ?? 0), 0) : null;
-
-    const adWeeks = weeks.filter((w) => w.adSpend != null);
-    const adSpend = adWeeks.length > 0 ? adWeeks.reduce((s, w) => s + (w.adSpend ?? 0), 0) : null;
-
-    const adSalesWeeks = weeks.filter((w) => w.adSales != null);
-    const adSales = adSalesWeeks.length > 0 ? adSalesWeeks.reduce((s, w) => s + (w.adSales ?? 0), 0) : null;
-
-    const profitWeeks = weeks.filter((w) => w.netProfit != null);
-    const netProfit = profitWeeks.length > 0 ? profitWeeks.reduce((s, w) => s + (w.netProfit ?? 0), 0) : null;
-
-    const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
-
-    const feeSources = new Set(weeks.map((w) => w.feeSource).filter(Boolean));
-    let feeSource: "settlement" | "estimated" | "mixed" | null = null;
-    if (feeSources.size === 1) {
-      feeSource = feeSources.values().next().value as any;
-    } else if (feeSources.size > 1) {
-      feeSource = "mixed";
-    }
-
-    const avgPrice = unitsSold > 0 ? revenue / unitsSold : 0;
-
-    const refundWeeks = weeks.filter((w) => w.refundAmount != null);
-    const refundAmount = refundWeeks.length > 0 ? refundWeeks.reduce((s, w) => s + (w.refundAmount ?? 0), 0) : null;
-
-    const tacos = adSpend != null && revenue > 0 ? adSpend / revenue : null;
-    const acos = adSpend != null && adSales != null && adSales > 0 ? adSpend / adSales : null;
-
-    // V4 expanded metrics
-    const avgUnitsPerOrder = orderCount > 0 ? unitsSold / orderCount : null;
-    const revenuePerOrder = orderCount > 0 ? revenue / orderCount : null;
-
-    const refundRateWeeks = weeks.filter((w) => w.refundRate != null);
-    const refundRate = refundRateWeeks.length > 0
-      ? refundRateWeeks.reduce((s, w) => s + (w.refundRate ?? 0), 0) / refundRateWeeks.length
-      : null;
-
-    const b2bWeeks = weeks.filter((w) => w.b2bRevenue != null);
-    const b2bRevenue = b2bWeeks.length > 0 ? b2bWeeks.reduce((s, w) => s + (w.b2bRevenue ?? 0), 0) : null;
-    const b2cWeeks = weeks.filter((w) => w.b2cRevenue != null);
-    const b2cRevenue = b2cWeeks.length > 0 ? b2cWeeks.reduce((s, w) => s + (w.b2cRevenue ?? 0), 0) : null;
-    const b2bUnitWeeks = weeks.filter((w) => w.b2bUnits != null);
-    const b2bUnits = b2bUnitWeeks.length > 0 ? b2bUnitWeeks.reduce((s, w) => s + (w.b2bUnits ?? 0), 0) : null;
-
-    results.push({
-      asin, sku: first.sku, productTitle: first.productTitle,
-      hasCogs, revenue, totalCogs, totalAmazonFees, netProceeds, adSpend, adSales,
-      netProfit, marginPct, unitsSold, avgPrice, feeSource, orderCount, refundAmount,
-      tacos, acos, avgUnitsPerOrder, revenuePerOrder, refundRate,
-      b2bRevenue, b2cRevenue, b2bUnits,
-    });
-  }
-
-  return results;
+export interface ShopifyProductAggregate {
+  sku: string;
+  productTitle: string;
+  revenue: number;
+  paymentFees: number;
+  totalCogs: number | null;
+  netProceeds: number;
+  netProfit: number | null;
+  marginPct: number | null;
+  unitsSold: number;
+  orderCount: number;
+  avgPrice: number;
+  hasCogs: boolean;
 }
 
-export function getTotals(products: ProductAggregate[]): ProductAggregate {
-  const revenue = products.reduce((s, p) => s + p.revenue, 0);
-  const unitsSold = products.reduce((s, p) => s + p.unitsSold, 0);
-  const orderCount = products.reduce((s, p) => s + p.orderCount, 0);
-
-  const cogsProducts = products.filter((p) => p.totalCogs != null);
-  const totalCogs = cogsProducts.length > 0 ? cogsProducts.reduce((s, p) => s + (p.totalCogs ?? 0), 0) : null;
-
-  const feeProducts = products.filter((p) => p.totalAmazonFees != null);
-  const totalAmazonFees = feeProducts.length > 0 ? feeProducts.reduce((s, p) => s + (p.totalAmazonFees ?? 0), 0) : null;
-
-  const npProducts = products.filter((p) => p.netProceeds != null);
-  const netProceeds = npProducts.length > 0 ? npProducts.reduce((s, p) => s + (p.netProceeds ?? 0), 0) : null;
-
-  const adProducts = products.filter((p) => p.adSpend != null);
-  const adSpend = adProducts.length > 0 ? adProducts.reduce((s, p) => s + (p.adSpend ?? 0), 0) : null;
-
-  const adSalesProducts = products.filter((p) => p.adSales != null);
-  const adSales = adSalesProducts.length > 0 ? adSalesProducts.reduce((s, p) => s + (p.adSales ?? 0), 0) : null;
-
-  const profitProducts = products.filter((p) => p.netProfit != null);
-  const netProfit = profitProducts.length > 0 ? profitProducts.reduce((s, p) => s + (p.netProfit ?? 0), 0) : null;
-
-  const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
-
-  const feeSources = new Set(products.map((p) => p.feeSource).filter(Boolean));
-  let feeSource: "settlement" | "estimated" | "mixed" | null = null;
-  if (feeSources.size === 1) {
-    feeSource = feeSources.values().next().value as any;
-  } else if (feeSources.size > 1) {
-    feeSource = "mixed";
-  }
-
-  const refundProducts = products.filter((p) => p.refundAmount != null);
-  const refundAmount = refundProducts.length > 0 ? refundProducts.reduce((s, p) => s + (p.refundAmount ?? 0), 0) : null;
-  const tacos = adSpend != null && revenue > 0 ? adSpend / revenue : null;
-  const acos = adSpend != null && adSales != null && adSales > 0 ? adSpend / adSales : null;
-
-  return {
-    asin: "TOTAL", sku: "", productTitle: "All Products", hasCogs: true,
-    revenue, totalCogs, totalAmazonFees, netProceeds, adSpend, adSales, netProfit,
-    marginPct, unitsSold, avgPrice: unitsSold > 0 ? revenue / unitsSold : 0, feeSource,
-    orderCount, refundAmount, tacos, acos,
-    avgUnitsPerOrder: orderCount > 0 ? unitsSold / orderCount : null,
-    revenuePerOrder: orderCount > 0 ? revenue / orderCount : null,
-    refundRate: null, b2bRevenue: null, b2cRevenue: null, b2bUnits: null,
-  };
+export interface UnifiedProductRow {
+  sku: string;
+  asin: string | null;
+  productTitle: string;
+  channels: string[];
+  amazonRev: number;
+  shopifyRev: number;
+  faireRev: number;
+  totalRev: number;
+  totalUnits: number;
+  totalOrders: number;
+  netProfit: number | null;
+  marginPct: number | null;
 }
 
-// ─── Dynamic KPI Period Comparison (Feature 2) ──────────────────────────
+export interface ChannelMixRow {
+  channel: string;
+  label: string;
+  revenue: number;
+  pctOfTotal: number;
+  orders: number;
+  units: number;
+  netProfit: number | null;
+}
+
+export interface ParetoProduct {
+  sku: string;
+  productTitle: string;
+  revenue: number;
+  netProfit: number | null;
+  hasCogs: boolean;
+  channels: string[];
+  [key: string]: any;
+}
+
+export interface AdAsinAggregate {
+  asin: string;
+  sku: string;
+  productTitle: string;
+  spend: number;
+  adSales: number;
+  acos: number;
+  tacos: number;
+  totalRevenue: number;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  orders: number;
+}
+
+export interface MonthlyProductData {
+  label: string;
+  month: string;
+  revenue: number;
+  adSales: number | null;
+  organicSales: number | null;
+  adSpend: number | null;
+  totalAmazonFees: number | null;
+  totalCogs: number | null;
+  netProceeds: number | null;
+  netProfit: number | null;
+  feeSource: "settlement" | "estimated" | "mixed" | null;
+}
+
+export interface ShopifyMonthlyRow {
+  label: string;
+  month: string;
+  revenue: number;
+  paymentFees: number;
+  totalCogs: number | null;
+  netProfit: number | null;
+}
+
+// ─── Dynamic KPI Period Comparison ───────────────────────────────────────
 
 export type DatePreset = "Last Week" | "Last 4 Weeks" | "Last 12 Weeks" | "Last 26 Weeks" | "YTD" | "All" | "Custom";
 
@@ -481,7 +1083,6 @@ export function getPriorPeriod(
   const periodDays = Math.round(periodMs / (1000 * 60 * 60 * 24));
 
   if (preset === "YTD") {
-    // Compare vs same period last year
     const priorStart = new Date(startD);
     priorStart.setFullYear(priorStart.getFullYear() - 1);
     const priorEnd = new Date(endD);
@@ -493,7 +1094,6 @@ export function getPriorPeriod(
     };
   }
 
-  // For all other presets and custom: prior same-length period
   const priorEnd = new Date(startD.getTime() - 1000 * 60 * 60 * 24);
   const priorStart = new Date(priorEnd.getTime() - periodMs);
 
@@ -508,589 +1108,52 @@ export function getPriorPeriod(
   };
 }
 
-// Aggregate Amazon KPIs for any date range
-export interface PeriodKpiData {
-  revenue: number;
-  totalAmazonFees: number | null;
-  netProceeds: number | null;
-  netProfit: number | null;
-  unitsSold: number;
-  marginPct: number | null;
-}
+// ─── Totals computation (works on already-aggregated product data) ────────
 
-export function getAmazonKpisForRange(startDate: string, endDate: string): PeriodKpiData {
-  const facts = data.weeklyFacts.filter((f) => {
-    if (f.channel !== "amazon") return false;
-    if (f.weekStartDate < startDate) return false;
-    if (f.weekEndDate > endDate) return false;
-    return true;
-  });
+export function getTotals(products: ProductAggregate[]): ProductAggregate {
+  const revenue = products.reduce((s, p) => s + p.revenue, 0);
+  const unitsSold = products.reduce((s, p) => s + p.unitsSold, 0);
+  const orderCount = products.reduce((s, p) => s + p.orderCount, 0);
 
-  const revenue = facts.reduce((s, f) => s + f.revenue, 0);
-  const unitsSold = facts.reduce((s, f) => s + f.unitsSold, 0);
-  const feeW = facts.filter((f) => f.totalAmazonFees != null);
-  const totalAmazonFees = feeW.length > 0 ? feeW.reduce((s, f) => s + (f.totalAmazonFees ?? 0), 0) : null;
-  const npW = facts.filter((f) => f.netProceeds != null);
-  const netProceeds = npW.length > 0 ? npW.reduce((s, f) => s + (f.netProceeds ?? 0), 0) : null;
-  const profitW = facts.filter((f) => f.netProfit != null);
-  const netProfit = profitW.length > 0 ? profitW.reduce((s, f) => s + (f.netProfit ?? 0), 0) : null;
+  const cogsProducts = products.filter((p) => p.totalCogs != null);
+  const totalCogs = cogsProducts.length > 0 ? cogsProducts.reduce((s, p) => s + (p.totalCogs ?? 0), 0) : null;
+
+  const feeProducts = products.filter((p) => p.totalAmazonFees != null);
+  const totalAmazonFees = feeProducts.length > 0 ? feeProducts.reduce((s, p) => s + (p.totalAmazonFees ?? 0), 0) : null;
+
+  const npProducts = products.filter((p) => p.netProceeds != null);
+  const netProceeds = npProducts.length > 0 ? npProducts.reduce((s, p) => s + (p.netProceeds ?? 0), 0) : null;
+
+  const adProducts = products.filter((p) => p.adSpend != null);
+  const adSpend = adProducts.length > 0 ? adProducts.reduce((s, p) => s + (p.adSpend ?? 0), 0) : null;
+
+  const adSalesProducts = products.filter((p) => p.adSales != null);
+  const adSales = adSalesProducts.length > 0 ? adSalesProducts.reduce((s, p) => s + (p.adSales ?? 0), 0) : null;
+
+  const profitProducts = products.filter((p) => p.netProfit != null);
+  const netProfit = profitProducts.length > 0 ? profitProducts.reduce((s, p) => s + (p.netProfit ?? 0), 0) : null;
+
   const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
 
-  return { revenue, totalAmazonFees, netProceeds, netProfit, unitsSold, marginPct };
-}
+  const feeSources = new Set(products.map((p) => p.feeSource).filter(Boolean));
+  let feeSource: "settlement" | "estimated" | "mixed" | null = null;
+  if (feeSources.size === 1) feeSource = feeSources.values().next().value as any;
+  else if (feeSources.size > 1) feeSource = "mixed";
 
-// Aggregate Overview KPIs for any date range
-export interface OverviewPeriodKpiData {
-  totalRevenue: number;
-  amazonRevenue: number;
-  shopifyRevenue: number;
-  faireRevenue: number;
-  totalNetProfit: number | null;
-  totalUnits: number;
-}
-
-export function getOverviewKpisForRange(startDate: string, endDate: string): OverviewPeriodKpiData {
-  const filtered = data.unifiedHero.filter((r) => {
-    if (r.week < startDate) return false;
-    if (r.week > endDate) return false;
-    return true;
-  });
-
-  const amazonRevenue = filtered.reduce((s, r) => s + r.amazonRevenue, 0);
-  const shopifyRevenue = filtered.reduce((s, r) => s + r.shopifyRevenue, 0);
-  const faireRevenue = filtered.reduce((s, r) => s + r.faireRevenue, 0);
-  const totalRevenue = amazonRevenue + shopifyRevenue + faireRevenue;
-  const totalUnits = filtered.reduce((s, r) => s + r.totalUnits, 0);
-  const profitRows = filtered.filter((r) => r.totalNetProfit != null);
-  const totalNetProfit = profitRows.length > 0 ? profitRows.reduce((s, r) => s + (r.totalNetProfit ?? 0), 0) : null;
-
-  return { totalRevenue, amazonRevenue, shopifyRevenue, faireRevenue, totalNetProfit, totalUnits };
-}
-
-// Channel KPIs for any range
-export interface ChannelPeriodKpiData {
-  revenue: number;
-  fees: number;
-  netProceeds: number;
-  netProfit: number | null;
-  unitsSold: number;
-  marginPct: number | null;
-  cogs: number | null;
-  avgOrderValue: number;
-}
-
-export function getChannelKpisForRange(channel: "shopify_dtc" | "faire", startDate: string, endDate: string): ChannelPeriodKpiData {
-  const facts = data.shopifyFacts.filter((f) => {
-    if (f.channel !== channel) return false;
-    if (f.weekStartDate < startDate) return false;
-    if (f.weekStartDate > endDate) return false;
-    return true;
-  });
-
-  const revenue = facts.reduce((s, f) => s + f.revenue, 0);
-  const unitsSold = facts.reduce((s, f) => s + f.unitsSold, 0);
-  const orderCount = facts.reduce((s, f) => s + f.orderCount, 0);
-  const fees = facts.reduce((s, f) => s + f.paymentFees, 0);
-  const netProceeds = revenue - fees;
-  const cogsW = facts.filter((f) => f.totalCogs != null);
-  const cogs = cogsW.length > 0 ? cogsW.reduce((s, f) => s + (f.totalCogs ?? 0), 0) : null;
-  const profitW = facts.filter((f) => f.netProfit != null);
-  const netProfit = profitW.length > 0 ? profitW.reduce((s, f) => s + (f.netProfit ?? 0), 0) : null;
-  const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
-  const avgOrderValue = orderCount > 0 ? revenue / orderCount : 0;
-
-  return { revenue, fees, netProceeds, netProfit, unitsSold, marginPct, cogs, avgOrderValue };
-}
-
-function safePctChange(curr: number | null, prev: number | null): number | null {
-  if (curr == null || prev == null || prev === 0) return null;
-  return ((curr - prev) / Math.abs(prev)) * 100;
-}
-
-// ─── WoW KPIs for Amazon (Profitability) ──────────────────────────────────
-
-export interface ProfitKpiData {
-  revenue: number;
-  totalAmazonFees: number | null;
-  netProceeds: number | null;
-  netProfit: number | null;
-  unitsSold: number;
-  marginPct: number | null;
-  revenueChange: number | null;
-  feesChange: number | null;
-  netProceedsChange: number | null;
-  netProfitChange: number | null;
-  unitsSoldChange: number | null;
-  feeSource: "settlement" | "estimated" | null;
-  comparisonLabel: string | null;
-}
-
-export function getDynamicAmazonKpis(
-  dateRange: { start: string; end: string },
-  preset: DatePreset,
-): ProfitKpiData {
-  const current = getAmazonKpisForRange(dateRange.start, dateRange.end);
-  const prior = getPriorPeriod(dateRange, preset);
-
-  if (!prior) {
-    return {
-      ...current,
-      revenueChange: null, feesChange: null, netProceedsChange: null,
-      netProfitChange: null, unitsSoldChange: null,
-      feeSource: null, comparisonLabel: null,
-    };
-  }
-
-  const prev = getAmazonKpisForRange(prior.start, prior.end);
+  const refundProducts = products.filter((p) => p.refundAmount != null);
+  const refundAmount = refundProducts.length > 0 ? refundProducts.reduce((s, p) => s + (p.refundAmount ?? 0), 0) : null;
+  const tacos = adSpend != null && revenue > 0 ? adSpend / revenue : null;
+  const acos = adSpend != null && adSales != null && adSales > 0 ? adSpend / adSales : null;
 
   return {
-    ...current,
-    revenueChange: safePctChange(current.revenue, prev.revenue),
-    feesChange: safePctChange(current.totalAmazonFees, prev.totalAmazonFees),
-    netProceedsChange: safePctChange(current.netProceeds, prev.netProceeds),
-    netProfitChange: safePctChange(current.netProfit, prev.netProfit),
-    unitsSoldChange: safePctChange(current.unitsSold, prev.unitsSold),
-    feeSource: null,
-    comparisonLabel: prior.label,
+    asin: "TOTAL", sku: "", productTitle: "All Products", hasCogs: true,
+    revenue, totalCogs, totalAmazonFees, netProceeds, adSpend, adSales, netProfit,
+    marginPct, unitsSold, avgPrice: unitsSold > 0 ? revenue / unitsSold : 0, feeSource,
+    orderCount, refundAmount, tacos, acos,
+    avgUnitsPerOrder: orderCount > 0 ? unitsSold / orderCount : null,
+    revenuePerOrder: orderCount > 0 ? revenue / orderCount : null,
+    refundRate: null, b2bRevenue: null, b2cRevenue: null, b2bUnits: null,
   };
-}
-
-// Dynamic Overview KPIs
-export interface OverviewKpiResult {
-  totalRevenue: number;
-  amazonRevenue: number;
-  shopifyRevenue: number;
-  faireRevenue: number;
-  totalNetProfit: number | null;
-  totalUnits: number;
-  totalRevenueChange: number | null;
-  amazonRevenueChange: number | null;
-  shopifyRevenueChange: number | null;
-  faireRevenueChange: number | null;
-  totalNetProfitChange: number | null;
-  totalUnitsChange: number | null;
-  comparisonLabel: string | null;
-}
-
-export function getDynamicOverviewKpis(
-  dateRange: { start: string; end: string },
-  preset: DatePreset,
-): OverviewKpiResult {
-  const current = getOverviewKpisForRange(dateRange.start, dateRange.end);
-  const prior = getPriorPeriod(dateRange, preset);
-
-  if (!prior) {
-    return {
-      ...current,
-      totalRevenueChange: null, amazonRevenueChange: null,
-      shopifyRevenueChange: null, faireRevenueChange: null,
-      totalNetProfitChange: null, totalUnitsChange: null,
-      comparisonLabel: null,
-    };
-  }
-
-  const prev = getOverviewKpisForRange(prior.start, prior.end);
-
-  return {
-    ...current,
-    totalRevenueChange: safePctChange(current.totalRevenue, prev.totalRevenue),
-    amazonRevenueChange: safePctChange(current.amazonRevenue, prev.amazonRevenue),
-    shopifyRevenueChange: safePctChange(current.shopifyRevenue, prev.shopifyRevenue),
-    faireRevenueChange: safePctChange(current.faireRevenue, prev.faireRevenue),
-    totalNetProfitChange: safePctChange(current.totalNetProfit, prev.totalNetProfit),
-    totalUnitsChange: safePctChange(current.totalUnits, prev.totalUnits),
-    comparisonLabel: prior.label,
-  };
-}
-
-// Dynamic Channel KPIs
-export interface ChannelKpiResult {
-  revenue: number;
-  fees: number;
-  netProceeds: number;
-  netProfit: number | null;
-  unitsSold: number;
-  marginPct: number | null;
-  cogs: number | null;
-  avgOrderValue: number;
-  revenueChange: number | null;
-  feesChange: number | null;
-  netProceedsChange: number | null;
-  netProfitChange: number | null;
-  unitsSoldChange: number | null;
-  comparisonLabel: string | null;
-}
-
-export function getDynamicChannelKpis(
-  channel: "shopify_dtc" | "faire",
-  dateRange: { start: string; end: string },
-  preset: DatePreset,
-): ChannelKpiResult {
-  const current = getChannelKpisForRange(channel, dateRange.start, dateRange.end);
-  const prior = getPriorPeriod(dateRange, preset);
-
-  if (!prior) {
-    return {
-      ...current,
-      revenueChange: null, feesChange: null, netProceedsChange: null,
-      netProfitChange: null, unitsSoldChange: null,
-      comparisonLabel: null,
-    };
-  }
-
-  const prev = getChannelKpisForRange(channel, prior.start, prior.end);
-
-  return {
-    ...current,
-    revenueChange: safePctChange(current.revenue, prev.revenue),
-    feesChange: safePctChange(current.fees, prev.fees),
-    netProceedsChange: safePctChange(current.netProceeds, prev.netProceeds),
-    netProfitChange: safePctChange(current.netProfit, prev.netProfit),
-    unitsSoldChange: safePctChange(current.unitsSold, prev.unitsSold),
-    comparisonLabel: prior.label,
-  };
-}
-
-// ─── Expanded row metrics (Feature 4) ────────────────────────────────────
-
-export interface AmazonExpandedMetrics {
-  avgUnitsPerOrder: number | null;
-  revenuePerOrder: number | null;
-  refundRate: number | null;
-  b2bRevenue: number | null;
-  b2bPctOfTotal: number | null;
-  b2cRevenue: number | null;
-  b2cPctOfTotal: number | null;
-  b2bUnits: number | null;
-  sessions: null;
-  conversionRate: null;
-  activeSubscriptions: null;
-}
-
-export function getAmazonExpandedMetrics(
-  asin: string,
-  startDate: string,
-  endDate: string
-): AmazonExpandedMetrics {
-  const facts = data.weeklyFacts.filter((f) => {
-    if (f.channel !== "amazon" || f.asin !== asin) return false;
-    if (f.weekStartDate < startDate) return false;
-    if (f.weekEndDate > endDate) return false;
-    return true;
-  });
-
-  const totalRev = facts.reduce((s, f) => s + f.revenue, 0);
-  const totalUnits = facts.reduce((s, f) => s + f.unitsSold, 0);
-  const totalOrders = facts.reduce((s, f) => s + f.orderCount, 0);
-
-  const avgUnitsPerOrder = totalOrders > 0 ? totalUnits / totalOrders : null;
-  const revenuePerOrder = totalOrders > 0 ? totalRev / totalOrders : null;
-
-  const refundRateWeeks = facts.filter((f) => f.refundRate != null);
-  const refundRate = refundRateWeeks.length > 0
-    ? refundRateWeeks.reduce((s, f) => s + (f.refundRate ?? 0), 0) / refundRateWeeks.length
-    : null;
-
-  const b2bW = facts.filter((f) => f.b2bRevenue != null);
-  const b2bRevenue = b2bW.length > 0 ? b2bW.reduce((s, f) => s + (f.b2bRevenue ?? 0), 0) : null;
-  const b2cW = facts.filter((f) => f.b2cRevenue != null);
-  const b2cRevenue = b2cW.length > 0 ? b2cW.reduce((s, f) => s + (f.b2cRevenue ?? 0), 0) : null;
-  const b2bUW = facts.filter((f) => f.b2bUnits != null);
-  const b2bUnits = b2bUW.length > 0 ? b2bUW.reduce((s, f) => s + (f.b2bUnits ?? 0), 0) : null;
-
-  const b2bPctOfTotal = b2bRevenue != null && totalRev > 0 ? b2bRevenue / totalRev : null;
-  const b2cPctOfTotal = b2cRevenue != null && totalRev > 0 ? b2cRevenue / totalRev : null;
-
-  return {
-    avgUnitsPerOrder, revenuePerOrder, refundRate,
-    b2bRevenue, b2bPctOfTotal, b2cRevenue, b2cPctOfTotal, b2bUnits,
-    sessions: null, conversionRate: null, activeSubscriptions: null,
-  };
-}
-
-export interface ShopifyExpandedMetrics {
-  avgUnitsPerOrder: number | null;
-  revenuePerOrder: number | null;
-  sessions: null;
-  conversionRate: null;
-  avgTimeOnPage: null;
-  activeSubscriptions: null;
-}
-
-export function getShopifyExpandedMetrics(
-  channel: "shopify_dtc" | "faire",
-  sku: string,
-  startDate: string,
-  endDate: string
-): ShopifyExpandedMetrics {
-  const facts = data.shopifyFacts.filter((f) => {
-    if (f.channel !== channel || f.sku !== sku) return false;
-    if (f.weekStartDate < startDate) return false;
-    if (f.weekStartDate > endDate) return false;
-    return true;
-  });
-
-  const totalRev = facts.reduce((s, f) => s + f.revenue, 0);
-  const totalOrders = facts.reduce((s, f) => s + f.orderCount, 0);
-  const totalUnits = facts.reduce((s, f) => s + f.unitsSold, 0);
-
-  return {
-    avgUnitsPerOrder: totalOrders > 0 ? totalUnits / totalOrders : null,
-    revenuePerOrder: totalOrders > 0 ? totalRev / totalOrders : null,
-    sessions: null, conversionRate: null, avgTimeOnPage: null, activeSubscriptions: null,
-  };
-}
-
-// ─── Pareto analysis (Feature 5) ─────────────────────────────────────────
-
-export interface ParetoProduct {
-  sku: string;
-  productTitle: string;
-  revenue: number;
-  netProfit: number | null;
-  hasCogs: boolean;
-  channels: string[];
-}
-
-export function getParetoData(startDate: string, endDate: string): ParetoProduct[] {
-  // Combine Amazon + Shopify + Faire data per SKU
-  const skuMap = new Map<string, ParetoProduct>();
-
-  // Amazon
-  for (const f of data.weeklyFacts) {
-    if (f.channel !== "amazon") continue;
-    if (f.weekStartDate < startDate || f.weekEndDate > endDate) continue;
-    const existing = skuMap.get(f.sku);
-    if (existing) {
-      existing.revenue += f.revenue;
-      if (f.netProfit != null) existing.netProfit = (existing.netProfit ?? 0) + f.netProfit;
-      if (!existing.channels.includes("amazon")) existing.channels.push("amazon");
-    } else {
-      skuMap.set(f.sku, {
-        sku: f.sku, productTitle: f.productTitle, revenue: f.revenue,
-        netProfit: f.netProfit, hasCogs: f.hasCogs, channels: ["amazon"],
-      });
-    }
-  }
-
-  // Shopify/Faire
-  for (const f of data.shopifyFacts) {
-    if (f.weekStartDate < startDate || f.weekStartDate > endDate) continue;
-    const existing = skuMap.get(f.sku);
-    if (existing) {
-      existing.revenue += f.revenue;
-      if (f.netProfit != null) existing.netProfit = (existing.netProfit ?? 0) + f.netProfit;
-      if (f.hasCogs) existing.hasCogs = true;
-      if (!existing.channels.includes(f.channel)) existing.channels.push(f.channel);
-    } else {
-      skuMap.set(f.sku, {
-        sku: f.sku, productTitle: f.productTitle, revenue: f.revenue,
-        netProfit: f.netProfit, hasCogs: f.hasCogs, channels: [f.channel],
-      });
-    }
-  }
-
-  return Array.from(skuMap.values());
-}
-
-export function calculateGiniCoefficient(values: number[]): number {
-  const n = values.length;
-  if (n === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const total = sorted.reduce((s, v) => s + v, 0);
-  if (total === 0) return 0;
-  let numerator = 0;
-  for (let i = 0; i < n; i++) {
-    numerator += (2 * (i + 1) - n - 1) * sorted[i];
-  }
-  return numerator / (n * total);
-}
-
-// ─── Channel Mix data ────────────────────────────────────────────────────
-
-export interface ChannelMixRow {
-  channel: string;
-  label: string;
-  revenue: number;
-  pctOfTotal: number;
-  orders: number;
-  units: number;
-  netProfit: number | null;
-}
-
-export function getChannelMix(startDate?: string, endDate?: string): ChannelMixRow[] {
-  const filtered = data.unifiedHero.filter((r) => {
-    if (startDate && r.week < startDate) return false;
-    if (endDate && r.week > endDate) return false;
-    return true;
-  });
-
-  const sums = filtered.reduce(
-    (acc, r) => ({
-      amazonRevenue: acc.amazonRevenue + r.amazonRevenue,
-      shopifyRevenue: acc.shopifyRevenue + r.shopifyRevenue,
-      faireRevenue: acc.faireRevenue + r.faireRevenue,
-      totalRevenue: acc.totalRevenue + r.totalRevenue,
-      amazonOrders: acc.amazonOrders + r.amazonOrders,
-      shopifyOrders: acc.shopifyOrders + r.shopifyOrders,
-      faireOrders: acc.faireOrders + r.faireOrders,
-      amazonUnits: acc.amazonUnits + r.amazonUnits,
-      shopifyUnits: acc.shopifyUnits + r.shopifyUnits,
-      faireUnits: acc.faireUnits + r.faireUnits,
-      amazonNetProfit: acc.amazonNetProfit + (r.amazonNetProfit ?? 0),
-      shopifyNetProfit: acc.shopifyNetProfit + (r.shopifyNetProfit ?? 0),
-      faireNetProfit: acc.faireNetProfit + (r.faireNetProfit ?? 0),
-    }),
-    {
-      amazonRevenue: 0, shopifyRevenue: 0, faireRevenue: 0, totalRevenue: 0,
-      amazonOrders: 0, shopifyOrders: 0, faireOrders: 0,
-      amazonUnits: 0, shopifyUnits: 0, faireUnits: 0,
-      amazonNetProfit: 0, shopifyNetProfit: 0, faireNetProfit: 0,
-    }
-  );
-
-  const total = sums.totalRevenue || 1;
-
-  return [
-    { channel: "amazon", label: "Amazon", revenue: sums.amazonRevenue, pctOfTotal: sums.amazonRevenue / total, orders: sums.amazonOrders, units: sums.amazonUnits, netProfit: sums.amazonNetProfit },
-    { channel: "shopify_dtc", label: "Shopify DTC", revenue: sums.shopifyRevenue, pctOfTotal: sums.shopifyRevenue / total, orders: sums.shopifyOrders, units: sums.shopifyUnits, netProfit: sums.shopifyNetProfit },
-    { channel: "faire", label: "Faire/Wholesale", revenue: sums.faireRevenue, pctOfTotal: sums.faireRevenue / total, orders: sums.faireOrders, units: sums.faireUnits, netProfit: sums.faireNetProfit },
-  ];
-}
-
-// ─── Unified product table ───────────────────────────────────────────────
-
-export interface UnifiedProductRow {
-  sku: string;
-  asin: string | null;
-  productTitle: string;
-  channels: string[];
-  amazonRev: number;
-  shopifyRev: number;
-  faireRev: number;
-  totalRev: number;
-  totalUnits: number;
-  totalOrders: number;
-  netProfit: number | null;
-  marginPct: number | null;
-}
-
-export function getUnifiedProducts(startDate?: string, endDate?: string): UnifiedProductRow[] {
-  // Aggregate Amazon revenue per SKU
-  const amazonBySku = new Map<string, { rev: number; units: number; orders: number; netProfit: number | null }>();
-  for (const f of data.weeklyFacts) {
-    if (f.channel !== "amazon") continue;
-    if (startDate && f.weekStartDate < startDate) continue;
-    if (endDate && f.weekEndDate > endDate) continue;
-    const prev = amazonBySku.get(f.sku) ?? { rev: 0, units: 0, orders: 0, netProfit: null };
-    prev.rev += f.revenue;
-    prev.units += f.unitsSold;
-    prev.orders += f.orderCount;
-    if (f.netProfit != null) prev.netProfit = (prev.netProfit ?? 0) + f.netProfit;
-    amazonBySku.set(f.sku, prev);
-  }
-
-  // Aggregate Shopify DTC & Faire revenue per SKU
-  const shopifyBySku = new Map<string, { rev: number; units: number; orders: number; netProfit: number | null }>();
-  const faireBySku = new Map<string, { rev: number; units: number; orders: number; netProfit: number | null }>();
-  for (const f of data.shopifyFacts) {
-    if (startDate && f.weekStartDate < startDate) continue;
-    if (endDate && f.weekStartDate > endDate) continue;
-    const map = f.channel === "shopify_dtc" ? shopifyBySku : faireBySku;
-    const prev = map.get(f.sku) ?? { rev: 0, units: 0, orders: 0, netProfit: null };
-    prev.rev += f.revenue;
-    prev.units += f.unitsSold;
-    prev.orders += f.orderCount;
-    if (f.netProfit != null) prev.netProfit = (prev.netProfit ?? 0) + f.netProfit;
-    map.set(f.sku, prev);
-  }
-
-  return data.allProducts.map((p) => {
-    const amz = amazonBySku.get(p.sku) ?? { rev: 0, units: 0, orders: 0, netProfit: null };
-    const shop = shopifyBySku.get(p.sku) ?? { rev: 0, units: 0, orders: 0, netProfit: null };
-    const fair = faireBySku.get(p.sku) ?? { rev: 0, units: 0, orders: 0, netProfit: null };
-    const totalRev = amz.rev + shop.rev + fair.rev;
-    const profits = [amz.netProfit, shop.netProfit, fair.netProfit].filter((p) => p != null);
-    const netProfit = profits.length > 0 ? profits.reduce((s, p) => s + (p ?? 0), 0) : null;
-    const marginPct = netProfit != null && totalRev > 0 ? netProfit / totalRev : null;
-    return {
-      sku: p.sku,
-      asin: p.asin,
-      productTitle: p.productTitle,
-      channels: p.channels,
-      amazonRev: amz.rev,
-      shopifyRev: shop.rev,
-      faireRev: fair.rev,
-      totalRev,
-      totalUnits: amz.units + shop.units + fair.units,
-      totalOrders: amz.orders + shop.orders + fair.orders,
-      netProfit,
-      marginPct,
-    };
-  });
-}
-
-// ─── Shopify/Faire aggregation ────────────────────────────────────────────
-
-export interface ShopifyProductAggregate {
-  sku: string;
-  productTitle: string;
-  revenue: number;
-  paymentFees: number;
-  totalCogs: number | null;
-  netProceeds: number;
-  netProfit: number | null;
-  marginPct: number | null;
-  unitsSold: number;
-  orderCount: number;
-  avgPrice: number;
-  hasCogs: boolean;
-}
-
-export function aggregateShopifyProducts(
-  channel: "shopify_dtc" | "faire",
-  startDate?: string,
-  endDate?: string
-): ShopifyProductAggregate[] {
-  const filtered = data.shopifyFacts.filter((f) => {
-    if (f.channel !== channel) return false;
-    if (startDate && f.weekStartDate < startDate) return false;
-    if (endDate && f.weekStartDate > endDate) return false;
-    return true;
-  });
-
-  const bySku = new Map<string, ShopifyFact[]>();
-  for (const f of filtered) {
-    if (!bySku.has(f.sku)) bySku.set(f.sku, []);
-    bySku.get(f.sku)!.push(f);
-  }
-
-  const results: ShopifyProductAggregate[] = [];
-  for (const [sku, weeks] of bySku) {
-    const first = weeks[0];
-    const revenue = weeks.reduce((s, w) => s + w.revenue, 0);
-    const unitsSold = weeks.reduce((s, w) => s + w.unitsSold, 0);
-    const orderCount = weeks.reduce((s, w) => s + w.orderCount, 0);
-    const paymentFees = weeks.reduce((s, w) => s + w.paymentFees, 0);
-    const netProceeds = weeks.reduce((s, w) => s + w.netProceeds, 0);
-    const hasCogs = weeks.some((w) => w.hasCogs);
-
-    const cogsWeeks = weeks.filter((w) => w.totalCogs != null);
-    const totalCogs = cogsWeeks.length > 0 ? cogsWeeks.reduce((s, w) => s + (w.totalCogs ?? 0), 0) : null;
-
-    const profitWeeks = weeks.filter((w) => w.netProfit != null);
-    const netProfit = profitWeeks.length > 0 ? profitWeeks.reduce((s, w) => s + (w.netProfit ?? 0), 0) : null;
-
-    const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
-    const avgPrice = unitsSold > 0 ? revenue / unitsSold : 0;
-
-    results.push({
-      sku, productTitle: first.productTitle, revenue, paymentFees,
-      totalCogs, netProceeds, netProfit, marginPct, unitsSold, orderCount, avgPrice, hasCogs,
-    });
-  }
-
-  return results;
 }
 
 export function getShopifyTotals(products: ShopifyProductAggregate[]): ShopifyProductAggregate {
@@ -1115,97 +1178,130 @@ export function getShopifyTotals(products: ShopifyProductAggregate[]): ShopifyPr
   };
 }
 
-// ─── Shopify/Faire per-SKU weekly data for detail charts ──────────────────
+// ─── Expanded metrics types ───────────────────────────────────────────────
 
-export function getShopifyProductWeekly(
-  channel: "shopify_dtc" | "faire",
-  sku: string,
-  startDate?: string,
-  endDate?: string
-): ShopifyFact[] {
-  return data.shopifyFacts
-    .filter((f) => {
-      if (f.channel !== channel) return false;
-      if (f.sku !== sku) return false;
-      if (startDate && f.weekStartDate < startDate) return false;
-      if (endDate && f.weekStartDate > endDate) return false;
-      return true;
-    })
-    .sort((a, b) => a.weekStartDate.localeCompare(b.weekStartDate));
+export interface AmazonExpandedMetrics {
+  avgUnitsPerOrder: number | null;
+  revenuePerOrder: number | null;
+  refundRate: number | null;
+  b2bRevenue: number | null;
+  b2bPctOfTotal: number | null;
+  b2cRevenue: number | null;
+  b2cPctOfTotal: number | null;
+  b2bUnits: number | null;
+  sessions: null;
+  conversionRate: null;
+  activeSubscriptions: null;
 }
 
-export interface ShopifyMonthlyRow {
-  label: string;
-  month: string;
+export interface ShopifyExpandedMetrics {
+  avgUnitsPerOrder: number | null;
+  revenuePerOrder: number | null;
+  sessions: null;
+  conversionRate: null;
+  avgTimeOnPage: null;
+  activeSubscriptions: null;
+}
+
+// ─── Gini coefficient (pure math) ────────────────────────────────────────
+
+export function calculateGiniCoefficient(values: number[]): number {
+  const n = values.length;
+  if (n === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const total = sorted.reduce((s, v) => s + v, 0);
+  if (total === 0) return 0;
+  let numerator = 0;
+  for (let i = 0; i < n; i++) {
+    numerator += (2 * (i + 1) - n - 1) * sorted[i];
+  }
+  return numerator / (n * total);
+}
+
+// ─── KPI interfaces ───────────────────────────────────────────────────────
+
+function safePctChange(curr: number | null, prev: number | null): number | null {
+  if (curr == null || prev == null || prev === 0) return null;
+  return ((curr - prev) / Math.abs(prev)) * 100;
+}
+
+export interface PeriodKpiData {
   revenue: number;
-  paymentFees: number;
-  totalCogs: number | null;
+  totalAmazonFees: number | null;
+  netProceeds: number | null;
   netProfit: number | null;
+  unitsSold: number;
+  marginPct: number | null;
 }
 
-export function getShopifyProductMonthly(
-  channel: "shopify_dtc" | "faire",
-  sku: string,
-  startDate?: string,
-  endDate?: string
-): ShopifyMonthlyRow[] {
-  const weeks = getShopifyProductWeekly(channel, sku, startDate, endDate);
-  const byMonth = new Map<string, { facts: ShopifyFact[]; label: string }>();
-
-  for (const w of weeks) {
-    const d = new Date(w.weekStartDate + "T00:00:00");
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-    if (!byMonth.has(key)) byMonth.set(key, { facts: [], label });
-    byMonth.get(key)!.facts.push(w);
-  }
-
-  return Array.from(byMonth.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, { facts, label }]) => {
-      const revenue = facts.reduce((s, w) => s + w.revenue, 0);
-      const paymentFees = facts.reduce((s, w) => s + w.paymentFees, 0);
-      const cogsWeeks = facts.filter((w) => w.totalCogs != null);
-      const totalCogs = cogsWeeks.length > 0 ? cogsWeeks.reduce((s, w) => s + (w.totalCogs ?? 0), 0) : null;
-      const profitWeeks = facts.filter((w) => w.netProfit != null);
-      const netProfit = profitWeeks.length > 0 ? profitWeeks.reduce((s, w) => s + (w.netProfit ?? 0), 0) : null;
-      return { label, month, revenue, paymentFees, totalCogs, netProfit };
-    });
+export interface ProfitKpiData {
+  revenue: number;
+  totalAmazonFees: number | null;
+  netProceeds: number | null;
+  netProfit: number | null;
+  unitsSold: number;
+  marginPct: number | null;
+  revenueChange: number | null;
+  feesChange: number | null;
+  netProceedsChange: number | null;
+  netProfitChange: number | null;
+  unitsSoldChange: number | null;
+  feeSource: "settlement" | "estimated" | null;
+  comparisonLabel: string | null;
 }
 
-// ─── Channel hero chart data ──────────────────────────────────────────────
-
-export function getChannelHeroData(channel: "shopify_dtc" | "faire") {
-  const byWeek = new Map<string, { revenue: number; units: number; orders: number; netProfit: number | null; cogs: number | null }>();
-  for (const f of data.shopifyFacts) {
-    if (f.channel !== channel) continue;
-    const prev = byWeek.get(f.weekStartDate);
-    if (!prev) {
-      byWeek.set(f.weekStartDate, {
-        revenue: f.revenue, units: f.unitsSold, orders: f.orderCount,
-        netProfit: f.netProfit, cogs: f.totalCogs,
-      });
-    } else {
-      prev.revenue += f.revenue;
-      prev.units += f.unitsSold;
-      prev.orders += f.orderCount;
-      if (f.netProfit != null) prev.netProfit = (prev.netProfit ?? 0) + f.netProfit;
-      if (f.totalCogs != null) prev.cogs = (prev.cogs ?? 0) + f.totalCogs;
-    }
-  }
-
-  return Array.from(byWeek.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .slice(-52)
-    .map(([week, d]) => ({
-      week: formatWeekLabel(week),
-      rawWeek: week,
-      revenue: d.revenue, units: d.units, orders: d.orders,
-      netProfit: d.netProfit, cogs: d.cogs,
-    }));
+export interface OverviewKpiResult {
+  totalRevenue: number;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  totalNetProfit: number | null;
+  totalUnits: number;
+  totalRevenueChange: number | null;
+  amazonRevenueChange: number | null;
+  shopifyRevenueChange: number | null;
+  faireRevenueChange: number | null;
+  totalNetProfitChange: number | null;
+  totalUnitsChange: number | null;
+  comparisonLabel: string | null;
 }
 
-// ─── Channel WoW KPIs (legacy, kept for compatibility) ──────────────────
+export interface OverviewPeriodKpiData {
+  totalRevenue: number;
+  amazonRevenue: number;
+  shopifyRevenue: number;
+  faireRevenue: number;
+  totalNetProfit: number | null;
+  totalUnits: number;
+}
+
+export interface ChannelPeriodKpiData {
+  revenue: number;
+  fees: number;
+  netProceeds: number;
+  netProfit: number | null;
+  unitsSold: number;
+  marginPct: number | null;
+  cogs: number | null;
+  avgOrderValue: number;
+}
+
+export interface ChannelKpiResult {
+  revenue: number;
+  fees: number;
+  netProceeds: number;
+  netProfit: number | null;
+  unitsSold: number;
+  marginPct: number | null;
+  cogs: number | null;
+  avgOrderValue: number;
+  revenueChange: number | null;
+  feesChange: number | null;
+  netProceedsChange: number | null;
+  netProfitChange: number | null;
+  unitsSoldChange: number | null;
+  comparisonLabel: string | null;
+}
 
 export interface ChannelKpiData {
   revenue: number;
@@ -1223,95 +1319,134 @@ export interface ChannelKpiData {
   unitsSoldChange: number;
 }
 
-export function getChannelWoWKpis(channel: "shopify_dtc" | "faire"): ChannelKpiData {
-  const heroData = getChannelHeroData(channel);
-  if (heroData.length < 2) {
-    return {
-      revenue: 0, fees: 0, netProceeds: 0, netProfit: null, unitsSold: 0,
-      marginPct: null, cogs: null, avgOrderValue: 0,
-      revenueChange: 0, feesChange: 0, netProceedsChange: 0, netProfitChange: null, unitsSoldChange: 0,
-    };
+// ─── Dynamic KPI hooks (two-period comparison) ────────────────────────────
+
+export function useDynamicAmazonKpis(dateRange: { start: string; end: string }, preset: DatePreset) {
+  const current = useOverview(dateRange.start, dateRange.end);
+  const prior = getPriorPeriod(dateRange, preset);
+  const prev = useOverview(prior?.start, prior?.end);
+
+  if (!current.data) return { data: null, isLoading: current.isLoading };
+
+  const c = current.data;
+  const amazonRevenue = c.amazonRevenue ?? 0;
+  const totalAmazonFees = c.totalAmazonFees;
+  const netProceeds = totalAmazonFees != null ? amazonRevenue - Math.abs(totalAmazonFees) : null;
+  const amazonNetProfit = c.totalNetProfit; // approximate
+  const amazonUnits = c.amazonUnits ?? 0;
+  const marginPct = amazonNetProfit != null && amazonRevenue > 0 ? amazonNetProfit / amazonRevenue : null;
+
+  const result: ProfitKpiData = {
+    revenue: amazonRevenue,
+    totalAmazonFees,
+    netProceeds,
+    netProfit: amazonNetProfit,
+    unitsSold: amazonUnits,
+    marginPct,
+    revenueChange: null,
+    feesChange: null,
+    netProceedsChange: null,
+    netProfitChange: null,
+    unitsSoldChange: null,
+    feeSource: null,
+    comparisonLabel: prior?.label ?? null,
+  };
+
+  if (prev.data && prior) {
+    const p = prev.data;
+    result.revenueChange = safePctChange(amazonRevenue, p.amazonRevenue);
+    result.feesChange = safePctChange(totalAmazonFees, p.totalAmazonFees);
+    result.unitsSoldChange = safePctChange(amazonUnits, p.amazonUnits);
+    result.netProfitChange = safePctChange(amazonNetProfit, p.totalNetProfit);
   }
 
-  const current = heroData[heroData.length - 1];
-  const previous = heroData[heroData.length - 2];
-
-  const pctChange = (curr: number | null, prev: number | null) => {
-    if (curr == null || prev == null || prev === 0) return null;
-    return ((curr - prev) / Math.abs(prev)) * 100;
-  };
-
-  const safePct = (curr: number, prev: number) => {
-    if (prev === 0) return 0;
-    return ((curr - prev) / Math.abs(prev)) * 100;
-  };
-
-  const latestWeekFacts = data.shopifyFacts.filter(
-    (f) => f.channel === channel && f.weekStartDate === current.rawWeek
-  );
-  const currentFees = latestWeekFacts.reduce((s, f) => s + f.paymentFees, 0);
-  const prevWeekFacts = data.shopifyFacts.filter(
-    (f) => f.channel === channel && f.weekStartDate === previous.rawWeek
-  );
-  const prevFees = prevWeekFacts.reduce((s, f) => s + f.paymentFees, 0);
-
-  const marginPct = current.netProfit != null && current.revenue > 0
-    ? current.netProfit / current.revenue
-    : null;
-
-  return {
-    revenue: current.revenue, fees: currentFees,
-    netProceeds: current.revenue - currentFees, netProfit: current.netProfit,
-    unitsSold: current.units, marginPct, cogs: current.cogs,
-    avgOrderValue: current.orders > 0 ? current.revenue / current.orders : 0,
-    revenueChange: safePct(current.revenue, previous.revenue),
-    feesChange: safePct(currentFees, prevFees),
-    netProceedsChange: safePct(current.revenue - currentFees, previous.revenue - prevFees),
-    netProfitChange: pctChange(current.netProfit, previous.netProfit),
-    unitsSoldChange: safePct(current.units, previous.units),
-  };
+  return { data: result, isLoading: current.isLoading || prev.isLoading };
 }
 
-// ─── Product weekly data for detail chart ─────────────────────────────────
+export function useDynamicOverviewKpis(dateRange: { start: string; end: string }, preset: DatePreset) {
+  const current = useOverview(dateRange.start, dateRange.end);
+  const prior = getPriorPeriod(dateRange, preset);
+  const prev = useOverview(prior?.start, prior?.end);
 
-export function getProductWeeklyData(
-  asin: string,
-  startDate?: string,
-  endDate?: string
-): WeeklyFact[] {
-  return data.weeklyFacts
-    .filter((f) => {
-      if (f.asin !== asin) return false;
-      if (f.channel !== "amazon") return false;
-      if (startDate && f.weekStartDate < startDate) return false;
-      if (endDate && f.weekStartDate > endDate) return false;
-      return true;
-    })
-    .sort((a, b) => a.weekStartDate.localeCompare(b.weekStartDate));
+  if (!current.data) return { data: null, isLoading: current.isLoading };
+
+  const c = current.data;
+  const result: OverviewKpiResult = {
+    totalRevenue: c.totalRevenue,
+    amazonRevenue: c.amazonRevenue,
+    shopifyRevenue: c.shopifyRevenue,
+    faireRevenue: c.faireRevenue,
+    totalNetProfit: c.totalNetProfit,
+    totalUnits: c.totalUnits,
+    totalRevenueChange: null,
+    amazonRevenueChange: null,
+    shopifyRevenueChange: null,
+    faireRevenueChange: null,
+    totalNetProfitChange: null,
+    totalUnitsChange: null,
+    comparisonLabel: prior?.label ?? null,
+  };
+
+  if (prev.data && prior) {
+    const p = prev.data;
+    result.totalRevenueChange = safePctChange(c.totalRevenue, p.totalRevenue);
+    result.amazonRevenueChange = safePctChange(c.amazonRevenue, p.amazonRevenue);
+    result.shopifyRevenueChange = safePctChange(c.shopifyRevenue, p.shopifyRevenue);
+    result.faireRevenueChange = safePctChange(c.faireRevenue, p.faireRevenue);
+    result.totalNetProfitChange = safePctChange(c.totalNetProfit, p.totalNetProfit);
+    result.totalUnitsChange = safePctChange(c.totalUnits, p.totalUnits);
+  }
+
+  return { data: result, isLoading: current.isLoading || prev.isLoading };
 }
 
-export interface MonthlyProductData {
-  label: string;
-  month: string;
-  revenue: number;
-  adSales: number | null;
-  organicSales: number | null;
-  adSpend: number | null;
-  totalAmazonFees: number | null;
-  totalCogs: number | null;
-  netProceeds: number | null;
-  netProfit: number | null;
-  feeSource: "settlement" | "estimated" | "mixed" | null;
+export function useDynamicChannelKpis(channel: "shopify_dtc" | "faire", dateRange: { start: string; end: string }, preset: DatePreset) {
+  const currentProducts = useShopifyProducts(channel, dateRange.start, dateRange.end);
+  const prior = getPriorPeriod(dateRange, preset);
+  const prevProducts = useShopifyProducts(channel, prior?.start, prior?.end);
+
+  if (!currentProducts.data) return { data: null, isLoading: currentProducts.isLoading };
+
+  const prods = currentProducts.data;
+  const revenue = prods.reduce((s, p) => s + p.revenue, 0);
+  const unitsSold = prods.reduce((s, p) => s + p.unitsSold, 0);
+  const orderCount = prods.reduce((s, p) => s + p.orderCount, 0);
+  const fees = prods.reduce((s, p) => s + p.paymentFees, 0);
+  const netProceeds = revenue - fees;
+  const cogsP = prods.filter((p) => p.totalCogs != null);
+  const cogs = cogsP.length > 0 ? cogsP.reduce((s, p) => s + (p.totalCogs ?? 0), 0) : null;
+  const profitP = prods.filter((p) => p.netProfit != null);
+  const netProfit = profitP.length > 0 ? profitP.reduce((s, p) => s + (p.netProfit ?? 0), 0) : null;
+  const marginPct = netProfit != null && revenue > 0 ? netProfit / revenue : null;
+
+  const result: ChannelKpiResult = {
+    revenue, fees, netProceeds, netProfit, unitsSold, marginPct, cogs,
+    avgOrderValue: orderCount > 0 ? revenue / orderCount : 0,
+    revenueChange: null, feesChange: null, netProceedsChange: null,
+    netProfitChange: null, unitsSoldChange: null,
+    comparisonLabel: prior?.label ?? null,
+  };
+
+  if (prevProducts.data && prior) {
+    const pp = prevProducts.data;
+    const prevRev = pp.reduce((s, p) => s + p.revenue, 0);
+    const prevUnits = pp.reduce((s, p) => s + p.unitsSold, 0);
+    const prevFees = pp.reduce((s, p) => s + p.paymentFees, 0);
+    const prevNP = pp.filter((p) => p.netProfit != null).reduce((s, p) => s + (p.netProfit ?? 0), 0);
+    result.revenueChange = safePctChange(revenue, prevRev);
+    result.feesChange = safePctChange(fees, prevFees);
+    result.netProceedsChange = safePctChange(netProceeds, prevRev - prevFees);
+    result.netProfitChange = safePctChange(netProfit, prevNP);
+    result.unitsSoldChange = safePctChange(unitsSold, prevUnits);
+  }
+
+  return { data: result, isLoading: currentProducts.isLoading || prevProducts.isLoading };
 }
 
-export function getProductMonthlyData(
-  asin: string,
-  startDate?: string,
-  endDate?: string
-): MonthlyProductData[] {
-  const weeks = getProductWeeklyData(asin, startDate, endDate);
+// ─── Monthly aggregation helpers ─────────────────────────────────────────
+
+export function computeMonthlyFromWeekly(weeks: WeeklyFact[]): MonthlyProductData[] {
   const byMonth = new Map<string, { facts: WeeklyFact[]; label: string }>();
-
   for (const w of weeks) {
     const d = new Date(w.weekStartDate + "T00:00:00");
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -1342,125 +1477,46 @@ export function getProductMonthlyData(
       let feeSource: "settlement" | "estimated" | "mixed" | null = null;
       if (feeSources.size === 1) feeSource = feeSources.values().next().value as any;
       else if (feeSources.size > 1) feeSource = "mixed";
-
       return { label, month, revenue, adSales, organicSales, adSpend, totalAmazonFees, totalCogs, netProceeds, netProfit, feeSource };
     });
 }
 
-// ─── Hero chart data: per-product weekly revenue for stacking ────────────
-
-export function getProductWeeklyRevenue(asin: string): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const f of data.weeklyFacts) {
-    if (f.asin !== asin) continue;
-    if (f.channel !== "amazon") continue;
-    map.set(f.weekStartDate, (map.get(f.weekStartDate) ?? 0) + f.revenue);
-  }
-  return map;
-}
-
-// ─── Ad data helpers ──────────────────────────────────────────────────────
-
-export interface AdAsinAggregate {
-  asin: string;
-  sku: string;
-  productTitle: string;
-  spend: number;
-  adSales: number;
-  acos: number;
-  tacos: number;
-  totalRevenue: number;
-  impressions: number;
-  clicks: number;
-  ctr: number;
-  cpc: number;
-  orders: number;
-}
-
-export function getAdSummaryForRange(
-  startDate: string,
-  endDate: string
-): {
-  totalSpend: number;
-  totalAdSales: number;
-  acos: number;
-  totalClicks: number;
-  totalImpressions: number;
-  ctr: number;
-  cpc: number;
-  totalOrders: number;
-  weeklyData: { week: string; weekLabel: string; spend: number; acos: number }[];
-  asinBreakdown: AdAsinAggregate[];
-  hasData: boolean;
-} {
-  const filteredWeeks = data.adWeeklySummary.filter(
-    (w) => w.week >= startDate && w.week <= endDate
-  );
-
-  if (filteredWeeks.length === 0) {
-    return {
-      totalSpend: 0, totalAdSales: 0, acos: 0, totalClicks: 0,
-      totalImpressions: 0, ctr: 0, cpc: 0, totalOrders: 0,
-      weeklyData: [], asinBreakdown: [], hasData: false,
-    };
+export function computeShopifyMonthly(weeks: ShopifyFact[]): ShopifyMonthlyRow[] {
+  const byMonth = new Map<string, { facts: ShopifyFact[]; label: string }>();
+  for (const w of weeks) {
+    const d = new Date(w.weekStartDate + "T00:00:00");
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+    if (!byMonth.has(key)) byMonth.set(key, { facts: [], label });
+    byMonth.get(key)!.facts.push(w);
   }
 
-  const totalSpend = filteredWeeks.reduce((s, w) => s + w.totalSpend, 0);
-  const totalAdSales = filteredWeeks.reduce((s, w) => s + w.totalAdSales, 0);
-  const totalClicks = filteredWeeks.reduce((s, w) => s + w.totalClicks, 0);
-  const totalImpressions = filteredWeeks.reduce((s, w) => s + w.totalImpressions, 0);
-  const totalOrders = filteredWeeks.reduce((s, w) => s + w.totalOrders, 0);
-  const acos = totalAdSales > 0 ? totalSpend / totalAdSales : 0;
-  const ctr = totalImpressions > 0 ? totalClicks / totalImpressions : 0;
-  const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
-
-  const weeklyData = filteredWeeks.map((w) => ({
-    week: w.week,
-    weekLabel: formatWeekLabel(w.week),
-    spend: w.totalSpend,
-    acos: w.acos,
-  }));
-
-  const asinMap = new Map<string, AdAsinAggregate>();
-  for (const w of filteredWeeks) {
-    for (const ab of w.asinBreakdown) {
-      if (!asinMap.has(ab.asin)) {
-        asinMap.set(ab.asin, {
-          asin: ab.asin, sku: ab.sku, productTitle: ab.productTitle,
-          spend: 0, adSales: 0, acos: 0, tacos: 0, totalRevenue: 0,
-          impressions: 0, clicks: 0, ctr: 0, cpc: 0, orders: 0,
-        });
-      }
-      const entry = asinMap.get(ab.asin)!;
-      entry.spend += ab.spend;
-      entry.adSales += ab.adSales;
-      entry.impressions += ab.impressions;
-      entry.clicks += ab.clicks;
-      entry.orders += ab.orders;
-      entry.totalRevenue += ab.totalRevenue;
-    }
-  }
-
-  const asinBreakdown = Array.from(asinMap.values()).map((a) => ({
-    ...a,
-    acos: a.adSales > 0 ? a.spend / a.adSales : 0,
-    tacos: a.totalRevenue > 0 ? a.spend / a.totalRevenue : 0,
-    ctr: a.impressions > 0 ? a.clicks / a.impressions : 0,
-    cpc: a.clicks > 0 ? a.spend / a.clicks : 0,
-  }));
-
-  return {
-    totalSpend, totalAdSales, acos, totalClicks, totalImpressions,
-    ctr, cpc, totalOrders, weeklyData, asinBreakdown, hasData: true,
-  };
+  return Array.from(byMonth.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, { facts, label }]) => {
+      const revenue = facts.reduce((s, w) => s + w.revenue, 0);
+      const paymentFees = facts.reduce((s, w) => s + w.paymentFees, 0);
+      const cogsWeeks = facts.filter((w) => w.totalCogs != null);
+      const totalCogs = cogsWeeks.length > 0 ? cogsWeeks.reduce((s, w) => s + (w.totalCogs ?? 0), 0) : null;
+      const profitWeeks = facts.filter((w) => w.netProfit != null);
+      const netProfit = profitWeeks.length > 0 ? profitWeeks.reduce((s, w) => s + (w.netProfit ?? 0), 0) : null;
+      return { label, month, revenue, paymentFees, totalCogs, netProfit };
+    });
 }
 
-// ─── CSV export ───────────────────────────────────────────────────────────
+// ─── CSV export helpers ───────────────────────────────────────────────────
 
-export function exportProfitabilityCsv(
-  products: ProductAggregate[],
-  filename: string
-) {
+function downloadCsv(csv: string, filename: string) {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function exportProfitabilityCsv(products: ProductAggregate[], filename: string) {
   const headers = [
     "Product", "SKU", "ASIN", "Revenue", "Amazon Fees", "Net Proceeds",
     "COGS", "Ad Spend", "Net Profit", "Margin %", "Units Sold",
@@ -1476,7 +1532,6 @@ export function exportProfitabilityCsv(
     p.marginPct != null ? (p.marginPct * 100).toFixed(1) : "",
     p.unitsSold,
   ]);
-
   const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
   downloadCsv(csv, filename);
 }
@@ -1493,7 +1548,6 @@ export function exportAdCsv(asins: AdAsinAggregate[], filename: string) {
     a.impressions, a.clicks, (a.ctr * 100).toFixed(2) + "%",
     a.cpc.toFixed(2), a.orders,
   ]);
-
   const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
   downloadCsv(csv, filename);
 }
@@ -1532,68 +1586,75 @@ export function exportShopifyCsv(products: ShopifyProductAggregate[], channel: s
   downloadCsv(csv, filename);
 }
 
-function downloadCsv(csv: string, filename: string) {
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+// ─── Compat: expanded metrics helpers ────────────────────────────────────
 
-// ─── Legacy WoW functions (kept for backward compat) ──────────────────────
-
-export function getWoWKpis(): ProfitKpiData & { feeSource: "settlement" | "estimated" | null } {
-  const hero = data.heroChartData;
-  const current = hero[hero.length - 1];
-  const previous = hero[hero.length - 2];
-
-  const pctChange = (curr: number | null, prev: number | null) => {
-    if (curr == null || prev == null || prev === 0) return null;
-    return ((curr - prev) / Math.abs(prev)) * 100;
-  };
-
-  const marginPct = current.netProfit != null && current.revenue > 0
-    ? current.netProfit / current.revenue
-    : null;
-
+export function getAmazonExpandedMetrics(
+  productOrAsin: string | ProductAggregate,
+  _startDate?: string,
+  _endDate?: string,
+): AmazonExpandedMetrics {
+  if (typeof productOrAsin !== "string") {
+    const p = productOrAsin;
+    return {
+      avgUnitsPerOrder: p.avgUnitsPerOrder,
+      revenuePerOrder: p.revenuePerOrder,
+      refundRate: p.refundRate,
+      b2bRevenue: p.b2bRevenue,
+      b2bPctOfTotal: p.b2bRevenue != null && p.revenue > 0 ? p.b2bRevenue / p.revenue : null,
+      b2cRevenue: p.b2cRevenue,
+      b2cPctOfTotal: p.b2cRevenue != null && p.revenue > 0 ? p.b2cRevenue / p.revenue : null,
+      b2bUnits: p.b2bUnits,
+      sessions: null, conversionRate: null, activeSubscriptions: null,
+    };
+  }
   return {
-    revenue: current.revenue,
-    totalAmazonFees: current.totalAmazonFees,
-    netProceeds: current.netProceeds,
-    netProfit: current.netProfit,
-    unitsSold: current.units,
-    marginPct,
-    revenueChange: previous.revenue !== 0
-      ? ((current.revenue - previous.revenue) / Math.abs(previous.revenue)) * 100
-      : 0,
-    feesChange: pctChange(current.totalAmazonFees, previous.totalAmazonFees),
-    netProceedsChange: pctChange(current.netProceeds, previous.netProceeds),
-    netProfitChange: pctChange(current.netProfit, previous.netProfit),
-    unitsSoldChange: previous.units !== 0
-      ? ((current.units - previous.units) / Math.abs(previous.units)) * 100
-      : 0,
-    feeSource: current.feeSource,
-    comparisonLabel: "vs prior week",
+    avgUnitsPerOrder: null, revenuePerOrder: null, refundRate: null,
+    b2bRevenue: null, b2bPctOfTotal: null, b2cRevenue: null, b2cPctOfTotal: null,
+    b2bUnits: null, sessions: null, conversionRate: null, activeSubscriptions: null,
   };
 }
 
-export function getOverviewWoWKpis() {
-  const hero = data.unifiedHero;
-  const current = hero[hero.length - 1];
-  const previous = hero[hero.length - 2];
-
-  const pctChange = (curr: number | null, prev: number | null) => {
-    if (curr == null || prev == null || prev === 0) return null;
-    return ((curr - prev) / Math.abs(prev)) * 100;
+export function getShopifyExpandedMetrics(
+  _channel: "shopify_dtc" | "faire",
+  product: ShopifyProductAggregate | string,
+  _startDate?: string,
+  _endDate?: string,
+): ShopifyExpandedMetrics {
+  if (typeof product !== "string") {
+    const p = product;
+    return {
+      avgUnitsPerOrder: p.orderCount > 0 ? p.unitsSold / p.orderCount : null,
+      revenuePerOrder: p.orderCount > 0 ? p.revenue / p.orderCount : null,
+      sessions: null, conversionRate: null, avgTimeOnPage: null, activeSubscriptions: null,
+    };
+  }
+  return {
+    avgUnitsPerOrder: null, revenuePerOrder: null,
+    sessions: null, conversionRate: null, avgTimeOnPage: null, activeSubscriptions: null,
   };
+}
 
-  const safePct = (curr: number, prev: number) => {
-    if (prev === 0) return 0;
-    return ((curr - prev) / Math.abs(prev)) * 100;
-  };
+// ─── computeOverviewKpis (compat helper) ─────────────────────────────────
 
+export function computeOverviewKpis(
+  current: { totalRevenue: number; amazonRevenue: number; shopifyRevenue: number; faireRevenue: number; totalNetProfit: number | null; totalUnits: number; [key: string]: any },
+  previous: typeof current | null,
+  comparisonLabel: string | null,
+): OverviewKpiResult {
+  if (!previous) {
+    return {
+      totalRevenue: current.totalRevenue,
+      amazonRevenue: current.amazonRevenue,
+      shopifyRevenue: current.shopifyRevenue,
+      faireRevenue: current.faireRevenue,
+      totalNetProfit: current.totalNetProfit,
+      totalUnits: current.totalUnits,
+      totalRevenueChange: null, amazonRevenueChange: null,
+      shopifyRevenueChange: null, faireRevenueChange: null,
+      totalNetProfitChange: null, totalUnitsChange: null,
+      comparisonLabel: null,
+    };
+  }
   return {
     totalRevenue: current.totalRevenue,
     amazonRevenue: current.amazonRevenue,
@@ -1601,11 +1662,12 @@ export function getOverviewWoWKpis() {
     faireRevenue: current.faireRevenue,
     totalNetProfit: current.totalNetProfit,
     totalUnits: current.totalUnits,
-    totalRevenueChange: safePct(current.totalRevenue, previous.totalRevenue),
-    amazonRevenueChange: safePct(current.amazonRevenue, previous.amazonRevenue),
-    shopifyRevenueChange: safePct(current.shopifyRevenue, previous.shopifyRevenue),
-    faireRevenueChange: safePct(current.faireRevenue, previous.faireRevenue),
-    totalNetProfitChange: pctChange(current.totalNetProfit, previous.totalNetProfit),
-    totalUnitsChange: safePct(current.totalUnits, previous.totalUnits),
+    totalRevenueChange: safePctChange(current.totalRevenue, previous.totalRevenue),
+    amazonRevenueChange: safePctChange(current.amazonRevenue, previous.amazonRevenue),
+    shopifyRevenueChange: safePctChange(current.shopifyRevenue, previous.shopifyRevenue),
+    faireRevenueChange: safePctChange(current.faireRevenue, previous.faireRevenue),
+    totalNetProfitChange: safePctChange(current.totalNetProfit, previous.totalNetProfit),
+    totalUnitsChange: safePctChange(current.totalUnits, previous.totalUnits),
+    comparisonLabel,
   };
 }

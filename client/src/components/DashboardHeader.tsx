@@ -1,7 +1,7 @@
 import { Sun, Moon, Download, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/lib/theme";
-import { data } from "@/lib/data";
+import { useMeta } from "@/lib/data";
 
 interface Props {
   onExport: () => void;
@@ -9,14 +9,17 @@ interface Props {
 
 export function DashboardHeader({ onExport }: Props) {
   const { theme, toggleTheme } = useTheme();
+  const { data: meta } = useMeta();
 
-  const generatedAt = new Date(data.generatedAt).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const generatedAt = meta?.["generatedAt"]
+    ? new Date(meta["generatedAt"]).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
     <header className="sticky top-0 z-30 bg-background/95 backdrop-blur border-b border-border">
@@ -38,9 +41,11 @@ export function DashboardHeader({ onExport }: Props) {
 
         {/* Right: Controls */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="hidden sm:block text-xs text-muted-foreground tabular-nums">
-            Updated {generatedAt}
-          </span>
+          {generatedAt && (
+            <span className="hidden sm:block text-xs text-muted-foreground tabular-nums">
+              Updated {generatedAt}
+            </span>
+          )}
           <Button
             variant="outline"
             size="sm"
