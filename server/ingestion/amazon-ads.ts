@@ -1,127 +1,159 @@
 /**
- * Amazon Advertising / MarketplaceAdPros ingestion module.
+ * Amazon Advertising Ingestion Module
  *
- * Pulls ad performance data by ASIN and week, upserts into
- * ad_weekly_summary and updates weekly_metrics ad fields.
+ * Pulls ad performance data from MarketplaceAdPros MCP endpoint
+ * by ASIN by week, and upserts into ad_weekly_summary + weekly_metrics.
  *
  * Required env vars:
- *   AMAZON_ADS_CLIENT_ID
- *   AMAZON_ADS_CLIENT_SECRET
- *   AMAZON_ADS_REFRESH_TOKEN
- *   AMAZON_ADS_PROFILE_ID
- *
- * Alternative: MarketplaceAdPros MCP endpoint
- *   MARKETPLACE_AD_PROS_API_KEY
- *   MARKETPLACE_AD_PROS_ACCOUNT_ID
+ *   MARKETPLACEADPROS_API_KEY
+ *   MARKETPLACEADPROS_INTEGRATION_ID
+ *   MARKETPLACEADPROS_ACCOUNT_ID
  */
 import { db } from "../storage";
 import { adWeeklySummary, weeklyMetrics } from "@shared/schema";
 import { sql, eq, and } from "drizzle-orm";
 
-interface AdPerformanceRow {
-  asin: string;
-  sku: string;
-  productTitle: string;
-  weekStartDate: string;
-  spend: number;
-  impressions: number;
-  clicks: number;
-  orders: number;
-  adSales: number;
-  totalRevenue: number;
+const MCP_ENDPOINT = "https://app.marketplaceadpros.com/mcp";
+
+interface McpResponse {
+  result: {
+    content: Array<{ type: string; text?: string; resource?: any }>;
+  };
 }
 
-export async function pullAmazonAdMetrics(
-  startDate: string,
-  endDate: string,
-): Promise<{ inserted: number; errors: string[] }> {
-  const errors: string[] = [];
-  let inserted = 0;
+/**
+ * Call the MarketplaceAdPros MCP ask_report_analyst tool
+ */
+async function askReportAnalyst(question: string): Promise<string> {
+  const apiKey = process.env.MARKETPLACEADPROS_API_KEY!;
+  const integrationId = process.env.MARKETPLACEADPROS_INTEGRATION_ID!;
+  const accountId = process.env.MARKETPLACEADPROS_ACCOUNT_ID!;
 
-  const apiKey = process.env.MARKETPLACE_AD_PROS_API_KEY;
-  const accountId = process.env.MARKETPLACE_AD_PROS_ACCOUNT_ID;
-  const adsClientId = process.env.AMAZON_ADS_CLIENT_ID;
+  const res = await fetch(MCP_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "tools/call",
+      params: {
+        name: "ask_report_analyst",
+        arguments: {
+          integration_id: integrationId,
+          account_id: accountId,
+          question,
+        },
+      },
+      id: Date.now(),
+    }),
+  });
 
-  if (!apiKey && !adsClientId) {
-    errors.push("Missing ad API credentials — skipping ad data sync");
-    return { inserted, errors };
+  const data: McpResponse = await res.json();
+  return data.result?.content?.[0]?.text || "";
+}
+
+/**
+ * Parse JSON array from MCP response text
+ */
+function extractJsonArray(text: string): any[] {
+  const start = text.indexOf("[");
+  if (start < 0) return [];
+  const end = text.lastIndexOf("]");
+  if (end < 0) return [];
+  try {
+    return JSON.parse(text.substring(start, end + 1));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pull ad performance data and upsert into database
+ */
+export async function syncAmazonAds(startDate: string, endDate: string) {
+  const requiredVars = [
+    "MARKETPLACEADPROS_API_KEY",
+    "MARKETPLACEADPROS_INTEGRATION_ID",
+    "MARKETPLACEADPROS_ACCOUNT_ID",
+  ];
+  const missing = requiredVars.filter((v) => !process.env[v]);
+  if (missing.length > 0) {
+    return { status: "skipped", reason: `Missing env vars: ${missing.join(", ")}` };
   }
 
-  try {
-    // TODO: Implement one of these approaches:
-    //
-    // Option A: MarketplaceAdPros API
-    // GET https://api.marketplaceadpros.com/v1/reports/weekly
-    //   Headers: { Authorization: `Bearer ${apiKey}`, X-Account-Id: accountId }
-    //   Query: { start_date: startDate, end_date: endDate, group_by: "asin,week" }
-    //
-    // Option B: Amazon Advertising API
-    // POST https://advertising-api.amazon.com/sp/reports
-    //   Headers: { Authorization: `Bearer ${accessToken}`, Amazon-Advertising-API-ClientId, Amazon-Advertising-API-Scope: profileId }
-    //   Body: { reportDate, metrics: "impressions,clicks,cost,attributedSales7d,attributedUnitsOrdered7d" }
+  console.log(`[Amazon Ads] Syncing ${startDate} to ${endDate}`);
 
-    const _rows: AdPerformanceRow[] = [];
+  const question = `Query the sponsored_products_product_ads report for date range ${startDate} to ${endDate}. Group by advertisedAsin and week. Return columns: week_start (min date in week), asin (advertisedAsin), cost, impressions, clicks, purchases1d, sales1d. Output as JSON array inline.`;
 
-    for (const row of _rows) {
-      const acos = row.adSales > 0 ? row.spend / row.adSales : null;
-      const tacos = row.totalRevenue > 0 ? row.spend / row.totalRevenue : null;
+  const responseText = await askReportAnalyst(question);
+  const rows = extractJsonArray(responseText);
 
-      // Upsert into ad_weekly_summary
+  if (rows.length === 0) {
+    console.log("[Amazon Ads] No data returned from MCP");
+    return { status: "completed", updated: 0, errors: [] };
+  }
+
+  let updated = 0;
+  const errors: string[] = [];
+
+  for (const row of rows) {
+    try {
+      const acos = row.sales1d > 0 ? row.cost / row.sales1d : null;
+
       await db
         .insert(adWeeklySummary)
         .values({
           asin: row.asin,
-          weekStartDate: row.weekStartDate,
-          spend: row.spend,
-          impressions: row.impressions,
-          clicks: row.clicks,
-          orders: row.orders,
-          adSales: row.adSales,
+          weekStartDate: row.week_start,
+          spend: row.cost || 0,
+          impressions: row.impressions || 0,
+          clicks: row.clicks || 0,
+          orders: row.purchases1d || 0,
+          adSales: row.sales1d || 0,
           acos,
-          tacos,
-          totalRevenue: row.totalRevenue,
         })
         .onConflictDoUpdate({
           target: [adWeeklySummary.asin, adWeeklySummary.weekStartDate],
           set: {
-            spend: sql`excluded.spend`,
-            impressions: sql`excluded.impressions`,
-            clicks: sql`excluded.clicks`,
-            orders: sql`excluded.orders`,
-            adSales: sql`excluded.ad_sales`,
-            acos: sql`excluded.acos`,
-            tacos: sql`excluded.tacos`,
-            totalRevenue: sql`excluded.total_revenue`,
+            spend: sql`EXCLUDED.spend`,
+            impressions: sql`EXCLUDED.impressions`,
+            clicks: sql`EXCLUDED.clicks`,
+            orders: sql`EXCLUDED.orders`,
+            adSales: sql`EXCLUDED.ad_sales`,
+            acos: sql`EXCLUDED.acos`,
           },
         });
 
-      // Also update weekly_metrics ad fields for this ASIN/week
+      // Also update weekly_metrics with ad data
       await db
         .update(weeklyMetrics)
         .set({
-          adSpend: row.spend,
-          adImpressions: row.impressions,
-          adClicks: row.clicks,
-          adOrders: row.orders,
-          adSales: row.adSales,
+          adSpend: row.cost || 0,
+          adImpressions: row.impressions || 0,
+          adClicks: row.clicks || 0,
+          adOrders: row.purchases1d || 0,
+          adSales: row.sales1d || 0,
           acos,
-          tacos,
           hasAdData: true,
-          organicSales: row.totalRevenue > row.adSales ? row.totalRevenue - row.adSales : null,
+          tacos: sql`CASE WHEN ${weeklyMetrics.revenue} > 0 THEN ${row.cost || 0} / ${weeklyMetrics.revenue} ELSE NULL END`,
+          organicSales: sql`CASE WHEN ${weeklyMetrics.revenue} > 0 THEN ${weeklyMetrics.revenue} - ${row.sales1d || 0} ELSE NULL END`,
         })
         .where(
           and(
             eq(weeklyMetrics.asin, row.asin),
-            eq(weeklyMetrics.weekStartDate, row.weekStartDate),
-            eq(weeklyMetrics.channel, "amazon"),
-          ),
+            eq(weeklyMetrics.weekStartDate, row.week_start),
+            eq(weeklyMetrics.channel, "amazon")
+          )
         );
 
-      inserted++;
+      updated++;
+    } catch (err: any) {
+      errors.push(`${row.asin}/${row.week_start}: ${err.message}`);
     }
-  } catch (err: any) {
-    errors.push(`Amazon Ads error: ${err.message}`);
   }
 
-  return { inserted, errors };
+  console.log(`[Amazon Ads] Done: ${updated} rows upserted, ${errors.length} errors`);
+  return { status: "completed", updated, errors };
 }
