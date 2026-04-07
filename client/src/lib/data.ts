@@ -428,13 +428,15 @@ export function useMeta() {
     queryFn: async () => {
       const rows = await fetchApi<RawWeeklyChartRow[]>("/api/weekly-chart");
       const weeks = rows.map((r) => r.week).sort();
-      const oldest = weeks[0] ?? "";
-      const newest = weeks[weeks.length - 1] ?? "";
+      const today = new Date().toISOString().slice(0, 10);
+      const oldest = weeks[0] || today;
+      const newest = weeks[weeks.length - 1] || today;
       return {
         "dateRange.oldest": oldest,
         "dateRange.newest": newest,
         generatedAt: new Date().toISOString(),
         meta: JSON.stringify({}),
+        _empty: rows.length === 0 ? "true" : "false",
       };
     },
     staleTime: 5 * 60 * 1000,
