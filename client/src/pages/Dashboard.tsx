@@ -1,3 +1,4 @@
+import { useBrand } from "@/lib/brand-context";
 import { useState, useMemo, useCallback } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { DashboardHeader } from "@/components/DashboardHeader";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/data";
 
 export default function Dashboard() {
+  const { brandId } = useBrand();
   const [activeTab, setActiveTab] = useState("overview");
 
   // Fetch metadata (date range, data sources)
@@ -57,6 +59,7 @@ export default function Dashboard() {
 
   // Fetch Amazon products from API
   const { data: products = [] } = useProducts(
+    brandId,
     effectiveDateRange.start,
     effectiveDateRange.end,
     "amazon",
@@ -104,10 +107,10 @@ export default function Dashboard() {
   }, []);
 
   // Fetch data needed for CSV export (lazy — only used on click)
-  const { data: adData } = useAdvertising(effectiveDateRange.start, effectiveDateRange.end);
-  const { data: unifiedProducts } = useUnifiedProducts(effectiveDateRange.start, effectiveDateRange.end);
-  const { data: shopifyProds } = useShopifyProducts("shopify_dtc", effectiveDateRange.start, effectiveDateRange.end);
-  const { data: faireProds } = useShopifyProducts("faire", effectiveDateRange.start, effectiveDateRange.end);
+  const { data: adData } = useAdvertising(brandId, effectiveDateRange.start, effectiveDateRange.end);
+  const { data: unifiedProducts } = useUnifiedProducts(brandId, effectiveDateRange.start, effectiveDateRange.end);
+  const { data: shopifyProds } = useShopifyProducts(brandId, "shopify_dtc", effectiveDateRange.start, effectiveDateRange.end);
+  const { data: faireProds } = useShopifyProducts(brandId, "faire", effectiveDateRange.start, effectiveDateRange.end);
 
   const handleExport = useCallback(() => {
     if (activeTab === "advertising") {

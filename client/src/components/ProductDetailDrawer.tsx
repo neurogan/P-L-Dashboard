@@ -8,6 +8,7 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useBrand } from "@/lib/brand-context";
 import {
   ProductAggregate,
   useProductDetail,
@@ -52,9 +53,11 @@ interface Props {
 }
 
 export function ProductDetailDrawer({ product, dateRange, onClose, open }: Props) {
+  const { brandId } = useBrand();
   const [granularity, setGranularity] = useState<Granularity>("weekly");
 
-  const { data: detail } = useProductDetail(
+  const { data: detail } = useProductDetail(brandId,
+
     product?.sku ?? "",
     dateRange.start,
     dateRange.end,
@@ -251,7 +254,8 @@ export function ShopifyDetailDrawer({ product, channel, dateRange, onClose, open
   const [granularity, setGranularity] = useState<Granularity>("weekly");
   const channelColor = CHANNEL_COLORS[channel];
 
-  const { data: detail } = useProductDetail(
+  const { data: detail } = useProductDetail(brandId,
+
     product?.sku ?? "",
     dateRange.start,
     dateRange.end,

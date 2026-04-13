@@ -21,6 +21,7 @@ import {
   detectPreset, ShopifyProductAggregate, CHANNEL_COLORS, CHANNEL_LABELS, DatePreset,
 } from "@/lib/data";
 import { ShopifyDetailDrawer } from "@/components/ProductDetailDrawer";
+import { useBrand } from "@/lib/brand-context";
 
 interface Props {
   channel: "shopify_dtc" | "faire";
@@ -122,6 +123,7 @@ function ShopifyExpandedRow({ sku, channel, dateRange, minDate, maxDate }: { sku
 }
 
 export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
+  const { brandId } = useBrand();
   const [sortKey, setSortKey] = useState("revenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
@@ -137,7 +139,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
   const isShopify = channel === "shopify_dtc";
 
   // Fetch channel hero data from API
-  const { data: rawHeroData, isLoading: heroLoading } = useChannelHero(channel);
+  const { data: rawHeroData, isLoading: heroLoading } = useChannelHero(brandId, channel);
   const heroData = useMemo(() => {
     if (!rawHeroData) return [];
     return rawHeroData.slice(-52).map((row) => ({
@@ -157,7 +159,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
 
   const hideChange = preset === "All";
 
-  const { data: products = [] } = useShopifyProducts(channel, dateRange.start, dateRange.end);
+  const { data: products = [] } = useShopifyProducts(brandId, channel, dateRange.start, dateRange.end);
 
   const totals = useMemo(() => getShopifyTotals(products), [products]);
 

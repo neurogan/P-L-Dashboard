@@ -12,14 +12,16 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useHeroChart, useProductsCatalog, useProductWeeklyRevenue, formatCurrency, formatWeekLabel, getProductColor } from "@/lib/data";
+import { useBrand } from "@/lib/brand-context";
 
 interface Props {
   selectedAsins: string[];
 }
 
 export function HeroChart({ selectedAsins }: Props) {
+  const { brandId } = useBrand();
   const { data: heroChartData } = useHeroChart();
-  const { data: allProducts } = useProductsCatalog();
+  const { data: allProducts } = useProductsCatalog(brandId);
 
   // Fetch per-product weekly revenue for each selected ASIN (max 5 slots)
   const rev0 = useProductWeeklyRevenue(selectedAsins[0] ?? "");
