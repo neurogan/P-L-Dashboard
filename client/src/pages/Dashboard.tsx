@@ -10,6 +10,7 @@ import { ProductDetailDrawer } from "@/components/ProductDetailDrawer";
 import { OverviewTab } from "@/components/OverviewTab";
 import { ChannelTab } from "@/components/ChannelTab";
 import { AdvertisingTab } from "@/components/AdvertisingTab";
+import { ChannelSettingsButton } from "@/components/ChannelSettings";
 import { SubscribeSaveTab } from "@/components/SubscribeSaveTab";
 import { ParetoTab } from "@/components/ParetoTab";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
@@ -219,6 +220,9 @@ export default function Dashboard() {
 
           {/* Tab 2: Amazon */}
           <TabsContent value="amazon" className="space-y-4">
+            <div className="flex justify-end">
+              <ChannelSettingsButton channel="amazon" />
+            </div>
             <HeroChart selectedAsins={chartSelectedAsins} />
             <KpiCards dateRange={effectiveDateRange} minDate={minDate} maxDate={maxDate} />
             <DateRangeSelector
@@ -251,6 +255,9 @@ export default function Dashboard() {
 
           {/* Tab 3: Shopify */}
           <TabsContent value="shopify" className="space-y-4">
+            <div className="flex justify-end">
+              <ChannelSettingsButton channel="shopify_dtc" />
+            </div>
             <DateRangeSelector
               dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
@@ -262,6 +269,9 @@ export default function Dashboard() {
 
           {/* Tab 4: Faire/Wholesale */}
           <TabsContent value="faire" className="space-y-4">
+            <div className="flex justify-end">
+              <ChannelSettingsButton channel="faire" />
+            </div>
             <DateRangeSelector
               dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
@@ -273,6 +283,9 @@ export default function Dashboard() {
 
           {/* Tab 5: Advertising */}
           <TabsContent value="advertising" className="space-y-4">
+            <div className="flex justify-end">
+              <ChannelSettingsButton channel="advertising" />
+            </div>
             <DateRangeSelector
               dateRange={effectiveDateRange}
               onDateRangeChange={setDateRange}
