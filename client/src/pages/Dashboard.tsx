@@ -30,10 +30,11 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("overview");
 
   // Fetch metadata (date range, data sources)
-  const { data: meta } = useMeta();
+  const { data: meta, isLoading: metaLoading } = useMeta();
 
   const minDate = meta?.["dateRange.oldest"] ?? "";
   const maxDate = meta?.["dateRange.newest"] ?? "";
+  const hasData = meta?.["_empty"] !== "true";
 
   // Date range state — initialized to full range once meta loads
   const [dateRange, setDateRange] = useState<{ start: string; end: string } | null>(null);
@@ -141,10 +142,26 @@ export default function Dashboard() {
     try { return JSON.parse(meta["meta"]); } catch { return null; }
   }, [meta]);
 
-  if (!minDate || !maxDate) {
+  if (metaLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-sm text-muted-foreground animate-pulse">Loading dashboard...</div>
+      </div>
+    );
+  }
+
+  if (!hasData) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <DashboardHeader onExport={() => {}} />
+        <main className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-4 max-w-md mx-auto px-4">
+            <h2 className="text-xl font-semibold text-foreground">No data yet</h2>
+            <p className="text-sm text-muted-foreground">
+              The dashboard is connected and ready. Use the sync feature to import sales data from your channels (Amazon, Shopify, Faire), or seed data to get started.
+            </p>
+          </div>
+        </main>
       </div>
     );
   }

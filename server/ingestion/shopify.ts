@@ -4,12 +4,15 @@
  * Pulls orders from Shopify Admin GraphQL API, splits into DTC vs Faire,
  * aggregates by SKU by week, and upserts into weekly_metrics.
  *
- * Required env vars:
- *   SHOPIFY_STORE_URL (e.g., "neurogan-health.myshopify.com")
- *   SHOPIFY_ACCESS_TOKEN
+ * Supports multiple stores via prefixed env vars:
+ *   NEUROGAN_HEALTH_SHOPIFY_STORE_URL / NEUROGAN_HEALTH_SHOPIFY_ACCESS_TOKEN
+ *   NEUROGAN_CBD_SHOPIFY_STORE_URL    / NEUROGAN_CBD_SHOPIFY_ACCESS_TOKEN
+ *   NEUROGAN_PETS_SHOPIFY_STORE_URL   / NEUROGAN_PETS_SHOPIFY_ACCESS_TOKEN
+ *
+ * Falls back to SHOPIFY_STORE_URL / SHOPIFY_ACCESS_TOKEN for single-store setups.
  */
 import { db } from "../storage";
-import { weeklyMetrics } from "@shared/schema";
+import { weeklyMetrics, products } from "@shared/schema";
 import { sql } from "drizzle-orm";
 
 const SHOPIFY_PAYMENTS_RATE = 0.029;
@@ -36,16 +39,55 @@ interface ShopifyOrder {
   };
 }
 
+interface ShopifyStoreConfig {
+  name: string;
+  storeUrl: string;
+  accessToken: string;
+}
+
+/**
+ * Discover all configured Shopify stores from environment variables.
+ * Looks for NEUROGAN_*_SHOPIFY_STORE_URL patterns, falls back to SHOPIFY_STORE_URL.
+ */
+function getShopifyStores(): ShopifyStoreConfig[] {
+  const stores: ShopifyStoreConfig[] = [];
+
+  // Check for prefixed multi-store config
+  const prefixes = ["NEUROGAN_HEALTH", "NEUROGAN_CBD", "NEUROGAN_PETS"];
+  for (const prefix of prefixes) {
+    const url = process.env[`${prefix}_SHOPIFY_STORE_URL`];
+    const token = process.env[`${prefix}_SHOPIFY_ACCESS_TOKEN`];
+    if (url && token) {
+      stores.push({
+        name: prefix.replace("NEUROGAN_", "").toLowerCase(),
+        storeUrl: url,
+        accessToken: token,
+      });
+    }
+  }
+
+  // Fall back to single-store config
+  if (stores.length === 0 && process.env.SHOPIFY_STORE_URL && process.env.SHOPIFY_ACCESS_TOKEN) {
+    stores.push({
+      name: "default",
+      storeUrl: process.env.SHOPIFY_STORE_URL,
+      accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
+    });
+  }
+
+  return stores;
+}
+
 /**
  * Fetch orders from Shopify Admin GraphQL API
  */
 async function fetchOrders(
+  storeUrl: string,
+  token: string,
   startDate: string,
   endDate: string,
   cursor: string | null = null
 ): Promise<{ orders: ShopifyOrder[]; hasNextPage: boolean; endCursor: string | null }> {
-  const storeUrl = process.env.SHOPIFY_STORE_URL!;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN!;
 
   const afterClause = cursor ? `, after: "${cursor}"` : "";
   const query = `{
@@ -109,28 +151,33 @@ function getWeekMonday(dateStr: string): string {
 }
 
 /**
- * Pull Shopify orders and upsert into weekly_metrics
+ * Pull Shopify orders from all configured stores and upsert into weekly_metrics
  */
 export async function syncShopifyOrders(startDate: string, endDate: string) {
-  const requiredVars = ["SHOPIFY_STORE_URL", "SHOPIFY_ACCESS_TOKEN"];
-  const missing = requiredVars.filter((v) => !process.env[v]);
-  if (missing.length > 0) {
-    return { status: "skipped", reason: `Missing env vars: ${missing.join(", ")}` };
+  const stores = getShopifyStores();
+  if (stores.length === 0) {
+    return { status: "skipped", reason: "No Shopify stores configured" };
   }
 
-  console.log(`[Shopify] Syncing ${startDate} to ${endDate}`);
+  console.log(`[Shopify] Syncing ${startDate} to ${endDate} across ${stores.length} store(s)`);
 
-  // Fetch all orders with pagination
+  // Fetch orders from all stores
   let allOrders: ShopifyOrder[] = [];
-  let cursor: string | null = null;
-  let hasMore = true;
 
-  while (hasMore) {
-    const page = await fetchOrders(startDate, endDate, cursor);
-    allOrders = allOrders.concat(page.orders);
-    hasMore = page.hasNextPage;
-    cursor = page.endCursor;
-    console.log(`  ... fetched ${allOrders.length} orders`);
+  for (const store of stores) {
+    console.log(`[Shopify] Fetching from ${store.name} (${store.storeUrl})...`);
+    let cursor: string | null = null;
+    let hasMore = true;
+    let storeOrderCount = 0;
+
+    while (hasMore) {
+      const page = await fetchOrders(store.storeUrl, store.accessToken, startDate, endDate, cursor);
+      allOrders = allOrders.concat(page.orders);
+      storeOrderCount += page.orders.length;
+      hasMore = page.hasNextPage;
+      cursor = page.endCursor;
+    }
+    console.log(`  ${store.name}: ${storeOrderCount} orders`);
   }
 
   // Filter to paid orders only
@@ -139,8 +186,10 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
   );
   console.log(`  ${paidOrders.length} paid orders (of ${allOrders.length} total)`);
 
-  // Aggregate by (channel, week, sku)
-  const agg: Record<string, { revenue: number; units: number; orders: Set<string> }> = {};
+  // Aggregate by (channel, week, sku) and track product titles
+  const agg: Record<string, { revenue: number; units: number; orders: Set<string>; title: string }> = {};
+  const skuTitles: Record<string, string> = {}; // sku → most recent product title
+  const skuChannels: Record<string, Set<string>> = {}; // sku → set of channels
 
   for (const order of paidOrders) {
     const channel = order.tags.includes("Faire") ? "faire" : "shopify_dtc";
@@ -154,12 +203,50 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
       const lineTotal = qty * unitPrice;
 
       const key = `${channel}|${week}|${sku}`;
-      if (!agg[key]) agg[key] = { revenue: 0, units: 0, orders: new Set() };
+      if (!agg[key]) agg[key] = { revenue: 0, units: 0, orders: new Set(), title: item.title };
       agg[key].revenue += lineTotal;
       agg[key].units += qty;
       agg[key].orders.add(order.name);
+
+      // Track product title and channels per SKU
+      if (sku !== "UNKNOWN") {
+        skuTitles[sku] = item.title;
+        if (!skuChannels[sku]) skuChannels[sku] = new Set();
+        skuChannels[sku].add(channel);
+      }
     }
   }
+
+  // Upsert discovered Shopify products into the products table
+  let productsUpserted = 0;
+  for (const [sku, title] of Object.entries(skuTitles)) {
+    const channels = Array.from(skuChannels[sku] || []);
+    try {
+      await db
+        .insert(products)
+        .values({ sku, productTitle: title, channels })
+        .onConflictDoUpdate({
+          target: [products.sku],
+          set: {
+            productTitle: sql`
+              CASE
+                WHEN ${products.productTitle} IS NULL OR ${products.productTitle} = ''
+                THEN EXCLUDED.product_title
+                ELSE ${products.productTitle}
+              END
+            `,
+            channels: sql`
+              (SELECT array_agg(DISTINCT val) FROM unnest(${products.channels} || EXCLUDED.channels) AS val)
+            `,
+          },
+        });
+      productsUpserted++;
+    } catch (err: any) {
+      // Not critical — log and continue
+      console.warn(`[Shopify] Failed to upsert product ${sku}: ${err.message}`);
+    }
+  }
+  console.log(`[Shopify] ${productsUpserted} products upserted into catalog`);
 
   // Upsert into weekly_metrics
   let updated = 0;
@@ -181,6 +268,7 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
           sku,
           channel,
           weekStartDate: week,
+          productTitle: data.title || null,
           revenue: Math.round(data.revenue * 100) / 100,
           unitsSold: data.units,
           orderCount,
@@ -194,6 +282,7 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
         .onConflictDoUpdate({
           target: [weeklyMetrics.sku, weeklyMetrics.weekStartDate, weeklyMetrics.channel],
           set: {
+            productTitle: sql`COALESCE(EXCLUDED.product_title, ${weeklyMetrics.productTitle})`,
             revenue: sql`EXCLUDED.revenue`,
             unitsSold: sql`EXCLUDED.units_sold`,
             orderCount: sql`EXCLUDED.order_count`,

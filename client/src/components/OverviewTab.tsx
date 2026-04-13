@@ -33,7 +33,8 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   return dir === "asc" ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />;
 }
 
-function truncate(str: string, len: number) {
+function truncate(str: string | null | undefined, len: number) {
+  if (!str) return "—";
   return str.length <= len ? str : str.slice(0, len) + "…";
 }
 
@@ -64,7 +65,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
   const hideChange = preset === "All";
 
   // Fetch unified hero chart from API (trailing 52 weeks)
-  const { data: weeklyChartData } = useWeeklyChart(dateRange.start, dateRange.end);
+  const { data: weeklyChartData, isLoading: chartLoading } = useWeeklyChart(dateRange.start, dateRange.end);
   const heroData = useMemo(() => {
     if (!weeklyChartData) return [];
     return weeklyChartData.slice(-52).map((row) => ({
@@ -185,9 +186,13 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
                 <Line yAxisId="right" type="monotone" dataKey="totalNetProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="totalNetProfit" connectNulls />
               </ComposedChart>
             </ResponsiveContainer>
-          ) : (
+          ) : chartLoading ? (
             <div className="h-[320px] flex items-center justify-center">
               <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+            </div>
+          ) : (
+            <div className="h-[320px] flex items-center justify-center">
+              <span className="text-sm text-muted-foreground">No data for the selected date range</span>
             </div>
           )}
         </CardContent>

@@ -1,8 +1,10 @@
 /**
  * Amazon SP-API Ingestion Module
  *
- * Pulls order metrics from Amazon Selling Partner API (getOrderMetrics)
- * for each ASIN, transforms into weekly_metrics rows, and upserts into PostgreSQL.
+ * 1. Discovers active listings via Reports API (GET_MERCHANT_LISTINGS_DATA)
+ *    and upserts them into the products table.
+ * 2. Pulls order metrics from Amazon Selling Partner API (getOrderMetrics)
+ *    for each ASIN, transforms into weekly_metrics rows, and upserts into PostgreSQL.
  *
  * Required env vars:
  *   AMAZON_SP_API_REFRESH_TOKEN
@@ -46,6 +48,150 @@ async function getAccessToken(): Promise<string> {
 }
 
 /**
+ * Discover active Amazon listings via Reports API and upsert into products table.
+ * Uses GET_MERCHANT_LISTINGS_DATA which returns a TSV of all active listings.
+ */
+export async function syncAmazonProducts() {
+  const requiredVars = [
+    "AMAZON_SP_API_REFRESH_TOKEN",
+    "AMAZON_SP_API_CLIENT_ID",
+    "AMAZON_SP_API_CLIENT_SECRET",
+    "AMAZON_SELLER_ID",
+  ];
+  const missing = requiredVars.filter((v) => !process.env[v]);
+  if (missing.length > 0) {
+    return { status: "skipped", reason: `Missing env vars: ${missing.join(", ")}` };
+  }
+
+  console.log("[Amazon Products] Discovering active listings...");
+  const accessToken = await getAccessToken();
+
+  // 1. Request the report
+  const createRes = await fetch(
+    "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports",
+    {
+      method: "POST",
+      headers: {
+        "x-amz-access-token": accessToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        reportType: "GET_MERCHANT_LISTINGS_DATA",
+        marketplaceIds: [MARKETPLACE_ID],
+      }),
+    }
+  );
+
+  if (!createRes.ok) {
+    const text = await createRes.text();
+    throw new Error(`Failed to create report: ${createRes.status} ${text}`);
+  }
+
+  const { reportId } = await createRes.json();
+  console.log(`[Amazon Products] Report ${reportId} created, polling...`);
+
+  // 2. Poll until the report is done (max ~5 minutes)
+  let reportDocumentId: string | null = null;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 10_000)); // wait 10s between polls
+
+    const pollRes = await fetch(
+      `https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports/${reportId}`,
+      { headers: { "x-amz-access-token": accessToken } }
+    );
+    const report = await pollRes.json();
+
+    if (report.processingStatus === "DONE") {
+      reportDocumentId = report.reportDocumentId;
+      break;
+    } else if (report.processingStatus === "CANCELLED" || report.processingStatus === "FATAL") {
+      throw new Error(`Report ${reportId} failed: ${report.processingStatus}`);
+    }
+    // IN_QUEUE or IN_PROGRESS — keep polling
+  }
+
+  if (!reportDocumentId) {
+    throw new Error(`Report ${reportId} timed out after 5 minutes`);
+  }
+
+  // 3. Get the download URL
+  const docRes = await fetch(
+    `https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/${reportDocumentId}`,
+    { headers: { "x-amz-access-token": accessToken } }
+  );
+  const docData = await docRes.json();
+  const downloadUrl = docData.url;
+
+  // 4. Download and parse the TSV
+  const tsvRes = await fetch(downloadUrl);
+  const tsvText = await tsvRes.text();
+  const lines = tsvText.trim().split("\n");
+
+  if (lines.length < 2) {
+    console.log("[Amazon Products] Report returned no listings");
+    return { status: "completed", updated: 0 };
+  }
+
+  // Parse header to find column indices
+  const headers = lines[0].split("\t").map((h) => h.trim().toLowerCase());
+  const col = (name: string) => headers.indexOf(name);
+  const skuIdx = col("seller-sku");
+  const asinIdx = col("asin1");
+  const titleIdx = col("item-name");
+  const statusIdx = col("status");
+
+  if (skuIdx === -1 || asinIdx === -1 || titleIdx === -1) {
+    console.error("[Amazon Products] Unexpected report columns:", headers.join(", "));
+    throw new Error("Could not find required columns in report");
+  }
+
+  // 5. Upsert active listings into products table
+  let updated = 0;
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split("\t");
+    const sku = cols[skuIdx]?.trim();
+    const asin = cols[asinIdx]?.trim();
+    const title = cols[titleIdx]?.trim();
+    const status = statusIdx >= 0 ? cols[statusIdx]?.trim().toLowerCase() : "active";
+
+    if (!sku || !asin || status !== "active") continue;
+
+    try {
+      await db
+        .insert(products)
+        .values({
+          sku,
+          asin,
+          productTitle: title || sku,
+          channels: ["amazon"],
+        })
+        .onConflictDoUpdate({
+          target: [products.sku],
+          set: {
+            asin: sql`EXCLUDED.asin`,
+            productTitle: sql`EXCLUDED.product_title`,
+            channels: sql`
+              CASE
+                WHEN NOT ('amazon' = ANY(${products.channels}))
+                THEN array_append(${products.channels}, 'amazon')
+                ELSE ${products.channels}
+              END
+            `,
+          },
+        });
+      updated++;
+    } catch (err: any) {
+      errors.push(`${sku}: ${err.message}`);
+    }
+  }
+
+  console.log(`[Amazon Products] Done: ${updated} products upserted, ${errors.length} errors`);
+  return { status: "completed", updated, errors };
+}
+
+/**
  * Call getOrderMetrics for a single ASIN over a date range
  */
 async function getOrderMetrics(
@@ -66,24 +212,38 @@ async function getOrderMetrics(
     buyerType,
   });
 
-  const res = await fetch(
-    `https://sellingpartnerapi-na.amazon.com/sales/v1/orderMetrics?${params}`,
-    {
-      headers: {
-        "x-amz-access-token": accessToken,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  let retries = 0;
+  while (retries < 3) {
+    const res = await fetch(
+      `https://sellingpartnerapi-na.amazon.com/sales/v1/orderMetrics?${params}`,
+      {
+        headers: {
+          "x-amz-access-token": accessToken,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-  if (!res.ok) {
-    const text = await res.text();
-    console.error(`SP-API error for ${asin}: ${res.status} ${text}`);
-    return [];
+    if (res.status === 429) {
+      retries++;
+      const wait = retries * 5_000; // back off: 5s, 10s, 15s
+      console.warn(`SP-API rate limited for ${asin}, retrying in ${wait / 1000}s...`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`SP-API error for ${asin}: ${res.status} ${text}`);
+      return [];
+    }
+
+    const data = await res.json();
+    return data.payload || [];
   }
 
-  const data = await res.json();
-  return data.payload || [];
+  console.error(`SP-API gave up on ${asin} after 3 retries (rate limited)`);
+  return [];
 }
 
 /**
@@ -112,8 +272,12 @@ export async function syncAmazonSales(startDate: string, endDate: string) {
   let updated = 0;
   let errors: string[] = [];
 
-  for (const product of allProducts) {
+  for (let i = 0; i < allProducts.length; i++) {
+    const product = allProducts[i];
     if (!product.asin) continue;
+
+    // Pace requests to stay under SP-API rate limits (~1 req/sec for sales endpoint)
+    if (i > 0) await new Promise((r) => setTimeout(r, 2_000));
 
     try {
       // Pull total sales
