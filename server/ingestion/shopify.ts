@@ -4,9 +4,12 @@
  * Pulls orders from Shopify Admin GraphQL API, splits into DTC vs Faire,
  * aggregates by SKU by week, and upserts into weekly_metrics.
  *
- * Required env vars:
- *   SHOPIFY_STORE_URL (e.g., "neurogan-health.myshopify.com")
- *   SHOPIFY_ACCESS_TOKEN
+ * Supports multiple stores via prefixed env vars:
+ *   NEUROGAN_HEALTH_SHOPIFY_STORE_URL / NEUROGAN_HEALTH_SHOPIFY_ACCESS_TOKEN
+ *   NEUROGAN_CBD_SHOPIFY_STORE_URL    / NEUROGAN_CBD_SHOPIFY_ACCESS_TOKEN
+ *   NEUROGAN_PETS_SHOPIFY_STORE_URL   / NEUROGAN_PETS_SHOPIFY_ACCESS_TOKEN
+ *
+ * Falls back to SHOPIFY_STORE_URL / SHOPIFY_ACCESS_TOKEN for single-store setups.
  */
 import { db } from "../storage";
 import { weeklyMetrics } from "@shared/schema";
@@ -36,16 +39,55 @@ interface ShopifyOrder {
   };
 }
 
+interface ShopifyStoreConfig {
+  name: string;
+  storeUrl: string;
+  accessToken: string;
+}
+
+/**
+ * Discover all configured Shopify stores from environment variables.
+ * Looks for NEUROGAN_*_SHOPIFY_STORE_URL patterns, falls back to SHOPIFY_STORE_URL.
+ */
+function getShopifyStores(): ShopifyStoreConfig[] {
+  const stores: ShopifyStoreConfig[] = [];
+
+  // Check for prefixed multi-store config
+  const prefixes = ["NEUROGAN_HEALTH", "NEUROGAN_CBD", "NEUROGAN_PETS"];
+  for (const prefix of prefixes) {
+    const url = process.env[`${prefix}_SHOPIFY_STORE_URL`];
+    const token = process.env[`${prefix}_SHOPIFY_ACCESS_TOKEN`];
+    if (url && token) {
+      stores.push({
+        name: prefix.replace("NEUROGAN_", "").toLowerCase(),
+        storeUrl: url,
+        accessToken: token,
+      });
+    }
+  }
+
+  // Fall back to single-store config
+  if (stores.length === 0 && process.env.SHOPIFY_STORE_URL && process.env.SHOPIFY_ACCESS_TOKEN) {
+    stores.push({
+      name: "default",
+      storeUrl: process.env.SHOPIFY_STORE_URL,
+      accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
+    });
+  }
+
+  return stores;
+}
+
 /**
  * Fetch orders from Shopify Admin GraphQL API
  */
 async function fetchOrders(
+  storeUrl: string,
+  token: string,
   startDate: string,
   endDate: string,
   cursor: string | null = null
 ): Promise<{ orders: ShopifyOrder[]; hasNextPage: boolean; endCursor: string | null }> {
-  const storeUrl = process.env.SHOPIFY_STORE_URL!;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN!;
 
   const afterClause = cursor ? `, after: "${cursor}"` : "";
   const query = `{
@@ -109,28 +151,33 @@ function getWeekMonday(dateStr: string): string {
 }
 
 /**
- * Pull Shopify orders and upsert into weekly_metrics
+ * Pull Shopify orders from all configured stores and upsert into weekly_metrics
  */
 export async function syncShopifyOrders(startDate: string, endDate: string) {
-  const requiredVars = ["SHOPIFY_STORE_URL", "SHOPIFY_ACCESS_TOKEN"];
-  const missing = requiredVars.filter((v) => !process.env[v]);
-  if (missing.length > 0) {
-    return { status: "skipped", reason: `Missing env vars: ${missing.join(", ")}` };
+  const stores = getShopifyStores();
+  if (stores.length === 0) {
+    return { status: "skipped", reason: "No Shopify stores configured" };
   }
 
-  console.log(`[Shopify] Syncing ${startDate} to ${endDate}`);
+  console.log(`[Shopify] Syncing ${startDate} to ${endDate} across ${stores.length} store(s)`);
 
-  // Fetch all orders with pagination
+  // Fetch orders from all stores
   let allOrders: ShopifyOrder[] = [];
-  let cursor: string | null = null;
-  let hasMore = true;
 
-  while (hasMore) {
-    const page = await fetchOrders(startDate, endDate, cursor);
-    allOrders = allOrders.concat(page.orders);
-    hasMore = page.hasNextPage;
-    cursor = page.endCursor;
-    console.log(`  ... fetched ${allOrders.length} orders`);
+  for (const store of stores) {
+    console.log(`[Shopify] Fetching from ${store.name} (${store.storeUrl})...`);
+    let cursor: string | null = null;
+    let hasMore = true;
+    let storeOrderCount = 0;
+
+    while (hasMore) {
+      const page = await fetchOrders(store.storeUrl, store.accessToken, startDate, endDate, cursor);
+      allOrders = allOrders.concat(page.orders);
+      storeOrderCount += page.orders.length;
+      hasMore = page.hasNextPage;
+      cursor = page.endCursor;
+    }
+    console.log(`  ${store.name}: ${storeOrderCount} orders`);
   }
 
   // Filter to paid orders only
