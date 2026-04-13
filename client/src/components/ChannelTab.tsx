@@ -34,7 +34,8 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   return dir === "asc" ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />;
 }
 
-function truncate(str: string, len: number) {
+function truncate(str: string | null | undefined, len: number) {
+  if (!str) return "—";
   return str.length <= len ? str : str.slice(0, len) + "…";
 }
 

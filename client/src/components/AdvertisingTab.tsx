@@ -58,7 +58,8 @@ function SortIcon({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   );
 }
 
-function truncate(str: string, len: number) {
+function truncate(str: string | null | undefined, len: number) {
+  if (!str) return "—";
   if (str.length <= len) return str;
   return str.slice(0, len) + "…";
 }
