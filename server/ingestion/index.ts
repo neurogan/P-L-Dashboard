@@ -84,7 +84,8 @@ export async function syncAll(
 }
 
 // Allow running directly: npx tsx server/ingestion/index.ts
-if (require.main === module) {
+// Guard: only run when invoked directly via CLI, not when bundled into the server
+if (require.main === module && process.argv[1]?.includes("ingestion")) {
   const startDate = process.argv[2] || new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
   const endDate = process.argv[3] || new Date().toISOString().split("T")[0];
   syncAll(startDate, endDate)
