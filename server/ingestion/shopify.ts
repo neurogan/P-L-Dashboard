@@ -12,7 +12,7 @@
  * Falls back to SHOPIFY_STORE_URL / SHOPIFY_ACCESS_TOKEN for single-store setups.
  */
 import { db } from "../storage";
-import { weeklyMetrics } from "@shared/schema";
+import { weeklyMetrics, products } from "@shared/schema";
 import { sql } from "drizzle-orm";
 
 const SHOPIFY_PAYMENTS_RATE = 0.029;
@@ -186,8 +186,10 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
   );
   console.log(`  ${paidOrders.length} paid orders (of ${allOrders.length} total)`);
 
-  // Aggregate by (channel, week, sku)
-  const agg: Record<string, { revenue: number; units: number; orders: Set<string> }> = {};
+  // Aggregate by (channel, week, sku) and track product titles
+  const agg: Record<string, { revenue: number; units: number; orders: Set<string>; title: string }> = {};
+  const skuTitles: Record<string, string> = {}; // sku → most recent product title
+  const skuChannels: Record<string, Set<string>> = {}; // sku → set of channels
 
   for (const order of paidOrders) {
     const channel = order.tags.includes("Faire") ? "faire" : "shopify_dtc";
@@ -201,12 +203,50 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
       const lineTotal = qty * unitPrice;
 
       const key = `${channel}|${week}|${sku}`;
-      if (!agg[key]) agg[key] = { revenue: 0, units: 0, orders: new Set() };
+      if (!agg[key]) agg[key] = { revenue: 0, units: 0, orders: new Set(), title: item.title };
       agg[key].revenue += lineTotal;
       agg[key].units += qty;
       agg[key].orders.add(order.name);
+
+      // Track product title and channels per SKU
+      if (sku !== "UNKNOWN") {
+        skuTitles[sku] = item.title;
+        if (!skuChannels[sku]) skuChannels[sku] = new Set();
+        skuChannels[sku].add(channel);
+      }
     }
   }
+
+  // Upsert discovered Shopify products into the products table
+  let productsUpserted = 0;
+  for (const [sku, title] of Object.entries(skuTitles)) {
+    const channels = Array.from(skuChannels[sku] || []);
+    try {
+      await db
+        .insert(products)
+        .values({ sku, productTitle: title, channels })
+        .onConflictDoUpdate({
+          target: [products.sku],
+          set: {
+            productTitle: sql`
+              CASE
+                WHEN ${products.productTitle} IS NULL OR ${products.productTitle} = ''
+                THEN EXCLUDED.product_title
+                ELSE ${products.productTitle}
+              END
+            `,
+            channels: sql`
+              (SELECT array_agg(DISTINCT val) FROM unnest(${products.channels} || EXCLUDED.channels) AS val)
+            `,
+          },
+        });
+      productsUpserted++;
+    } catch (err: any) {
+      // Not critical — log and continue
+      console.warn(`[Shopify] Failed to upsert product ${sku}: ${err.message}`);
+    }
+  }
+  console.log(`[Shopify] ${productsUpserted} products upserted into catalog`);
 
   // Upsert into weekly_metrics
   let updated = 0;
@@ -228,6 +268,7 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
           sku,
           channel,
           weekStartDate: week,
+          productTitle: data.title || null,
           revenue: Math.round(data.revenue * 100) / 100,
           unitsSold: data.units,
           orderCount,

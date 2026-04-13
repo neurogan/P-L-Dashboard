@@ -136,7 +136,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
   const isShopify = channel === "shopify_dtc";
 
   // Fetch channel hero data from API
-  const { data: rawHeroData } = useChannelHero(channel);
+  const { data: rawHeroData, isLoading: heroLoading } = useChannelHero(channel);
   const heroData = useMemo(() => {
     if (!rawHeroData) return [];
     return rawHeroData.slice(-52).map((row) => ({
@@ -261,9 +261,13 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
                 <Line yAxisId="right" type="monotone" dataKey="netProfit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} name="netProfit" connectNulls />
               </ComposedChart>
             </ResponsiveContainer>
-          ) : (
+          ) : heroLoading ? (
             <div className="h-[320px] flex items-center justify-center">
               <span className="text-sm text-muted-foreground animate-pulse">Loading chart...</span>
+            </div>
+          ) : (
+            <div className="h-[320px] flex items-center justify-center">
+              <span className="text-sm text-muted-foreground">No data for the selected date range</span>
             </div>
           )}
         </CardContent>
