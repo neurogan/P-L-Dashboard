@@ -282,6 +282,7 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
         .onConflictDoUpdate({
           target: [weeklyMetrics.sku, weeklyMetrics.weekStartDate, weeklyMetrics.channel],
           set: {
+            productTitle: sql`COALESCE(EXCLUDED.product_title, ${weeklyMetrics.productTitle})`,
             revenue: sql`EXCLUDED.revenue`,
             unitsSold: sql`EXCLUDED.units_sold`,
             orderCount: sql`EXCLUDED.order_count`,
