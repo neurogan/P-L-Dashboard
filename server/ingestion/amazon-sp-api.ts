@@ -212,24 +212,38 @@ async function getOrderMetrics(
     buyerType,
   });
 
-  const res = await fetch(
-    `https://sellingpartnerapi-na.amazon.com/sales/v1/orderMetrics?${params}`,
-    {
-      headers: {
-        "x-amz-access-token": accessToken,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  let retries = 0;
+  while (retries < 3) {
+    const res = await fetch(
+      `https://sellingpartnerapi-na.amazon.com/sales/v1/orderMetrics?${params}`,
+      {
+        headers: {
+          "x-amz-access-token": accessToken,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-  if (!res.ok) {
-    const text = await res.text();
-    console.error(`SP-API error for ${asin}: ${res.status} ${text}`);
-    return [];
+    if (res.status === 429) {
+      retries++;
+      const wait = retries * 5_000; // back off: 5s, 10s, 15s
+      console.warn(`SP-API rate limited for ${asin}, retrying in ${wait / 1000}s...`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`SP-API error for ${asin}: ${res.status} ${text}`);
+      return [];
+    }
+
+    const data = await res.json();
+    return data.payload || [];
   }
 
-  const data = await res.json();
-  return data.payload || [];
+  console.error(`SP-API gave up on ${asin} after 3 retries (rate limited)`);
+  return [];
 }
 
 /**
@@ -258,8 +272,12 @@ export async function syncAmazonSales(startDate: string, endDate: string) {
   let updated = 0;
   let errors: string[] = [];
 
-  for (const product of allProducts) {
+  for (let i = 0; i < allProducts.length; i++) {
+    const product = allProducts[i];
     if (!product.asin) continue;
+
+    // Pace requests to stay under SP-API rate limits (~1 req/sec for sales endpoint)
+    if (i > 0) await new Promise((r) => setTimeout(r, 2_000));
 
     try {
       // Pull total sales
