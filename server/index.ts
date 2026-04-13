@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { syncAll } from "./ingestion/index";
 
 const app = express();
 const httpServer = createServer(app);
@@ -98,6 +99,32 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      // Run initial sync after startup (last 12 weeks), then daily
+      if (process.env.NODE_ENV === "production") {
+        const runSync = () => {
+          const endDate = new Date().toISOString().split("T")[0];
+          const start = new Date();
+          start.setDate(start.getDate() - 84); // 12 weeks
+          const startDate = start.toISOString().split("T")[0];
+
+          log(`Scheduled sync: ${startDate} to ${endDate}`, "sync");
+          syncAll(startDate, endDate)
+            .then((results) => {
+              for (const r of results) {
+                const icon = r.status === "completed" ? "✓" : r.status === "skipped" ? "○" : "✗";
+                log(`  ${icon} ${r.module}: ${r.status}${r.updated ? ` (${r.updated} rows)` : ""}`, "sync");
+              }
+            })
+            .catch((err) => log(`Sync error: ${err.message}`, "sync"));
+        };
+
+        // Initial sync 30s after boot (let DB connections settle)
+        setTimeout(runSync, 30_000);
+
+        // Then every 24 hours
+        setInterval(runSync, 24 * 60 * 60 * 1000);
+      }
     },
   );
 })();

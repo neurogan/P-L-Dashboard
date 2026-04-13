@@ -8,7 +8,7 @@
  *   POST /api/sync?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
  *   or: DATABASE_URL=... npx tsx server/ingestion/index.ts
  */
-import { syncAmazonSales } from "./amazon-sp-api";
+import { syncAmazonProducts, syncAmazonSales } from "./amazon-sp-api";
 import { syncAmazonAds } from "./amazon-ads";
 import { syncShopifyOrders } from "./shopify";
 import { syncQuickBooksCogs } from "./quickbooks";
@@ -33,6 +33,14 @@ export async function syncAll(
   console.log(`========================================\n`);
 
   const results: SyncResult[] = [];
+
+  // 0. Discover/update Amazon product catalog
+  try {
+    const r = await syncAmazonProducts();
+    results.push({ module: "amazon-products", ...r });
+  } catch (err: any) {
+    results.push({ module: "amazon-products", status: "error", errors: [err.message] });
+  }
 
   // 1. Amazon Sales (SP-API)
   try {
