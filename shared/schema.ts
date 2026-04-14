@@ -7,6 +7,7 @@ import {
   boolean,
   uniqueIndex,
   index,
+  timestamp,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -29,19 +30,35 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+// ─── Brands ────────────────────────────────────────────────────────────────
+
+export const brands = plDashboard.table("brands", {
+  id: serial("id").primaryKey(),
+  brandKey: text("brand_key").notNull().unique(),
+  brandName: text("brand_name").notNull(),
+  platforms: text("platforms").array().default([]),
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertBrandSchema = createInsertSchema(brands).omit({ id: true, createdAt: true });
+export type InsertBrand = z.infer<typeof insertBrandSchema>;
+export type Brand = typeof brands.$inferSelect;
+
 // ─── Products ──────────────────────────────────────────────────────────────
 
 export const products = plDashboard.table(
   "products",
   {
     id: serial("id").primaryKey(),
+    brandId: integer("brand_id").references(() => brands.id),
     sku: text("sku").notNull(),
     asin: text("asin"),
     productTitle: text("product_title").notNull(),
     channels: text("channels").array(),
     isCore29: boolean("is_core_29").default(false),
   },
-  (table) => [uniqueIndex("products_sku_idx").on(table.sku)]
+  (table) => [uniqueIndex("products_brand_sku_idx").on(table.brandId, table.sku)]
 );
 
 export const insertProductSchema = createInsertSchema(products).omit({ id: true });
@@ -54,6 +71,7 @@ export const weeklyMetrics = plDashboard.table(
   "weekly_metrics",
   {
     id: serial("id").primaryKey(),
+    brandId: integer("brand_id").references(() => brands.id),
     sku: text("sku").notNull(),
     asin: text("asin"),
     channel: text("channel").notNull(), // "amazon", "shopify_dtc", "faire"
@@ -115,13 +133,15 @@ export const weeklyMetrics = plDashboard.table(
     activeSubscriptions: integer("active_subscriptions"),
   },
   (table) => [
-    uniqueIndex("wm_sku_week_channel_idx").on(
+    uniqueIndex("wm_brand_sku_week_channel_idx").on(
+      table.brandId,
       table.sku,
       table.weekStartDate,
       table.channel
     ),
     index("wm_week_idx").on(table.weekStartDate),
     index("wm_channel_idx").on(table.channel),
+    index("wm_brand_idx").on(table.brandId),
     index("wm_sku_idx").on(table.sku),
   ]
 );
@@ -136,6 +156,7 @@ export type WeeklyMetric = typeof weeklyMetrics.$inferSelect;
 
 export const cogsPeriods = plDashboard.table("cogs_periods", {
   id: serial("id").primaryKey(),
+  brandId: integer("brand_id").references(() => brands.id),
   sku: text("sku").notNull(),
   asin: text("asin"),
   startsDate: text("starts_date").notNull(),
@@ -158,6 +179,7 @@ export const adWeeklySummary = plDashboard.table(
   "ad_weekly_summary",
   {
     id: serial("id").primaryKey(),
+    brandId: integer("brand_id").references(() => brands.id),
     asin: text("asin").notNull(),
     weekStartDate: text("week_start_date").notNull(),
     spend: real("spend").notNull().default(0),
@@ -170,7 +192,7 @@ export const adWeeklySummary = plDashboard.table(
     totalRevenue: real("total_revenue"),
   },
   (table) => [
-    uniqueIndex("ad_asin_week_idx").on(table.asin, table.weekStartDate),
+    uniqueIndex("ad_brand_asin_week_idx").on(table.brandId, table.asin, table.weekStartDate),
   ]
 );
 
@@ -179,6 +201,48 @@ export const insertAdWeeklySummarySchema = createInsertSchema(
 ).omit({ id: true });
 export type InsertAdWeeklySummary = z.infer<typeof insertAdWeeklySummarySchema>;
 export type AdWeeklySummary = typeof adWeeklySummary.$inferSelect;
+
+// ─── SKU Aliases (cross-channel SKU mapping) ───────────────────────────────
+
+export const skuAliases = plDashboard.table(
+  "sku_aliases",
+  {
+    id: serial("id").primaryKey(),
+    brandId: integer("brand_id").references(() => brands.id),
+    channel: text("channel").notNull(),
+    channelSku: text("channel_sku").notNull(),
+    canonicalSku: text("canonical_sku").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("alias_brand_channel_sku_idx").on(table.brandId, table.channel, table.channelSku),
+  ]
+);
+
+export const insertSkuAliasSchema = createInsertSchema(skuAliases).omit({ id: true, createdAt: true });
+export type InsertSkuAlias = z.infer<typeof insertSkuAliasSchema>;
+export type SkuAlias = typeof skuAliases.$inferSelect;
+
+// ─── Channel Settings (per-channel configuration) ──────────────────────────
+
+export const channelSettings = plDashboard.table(
+  "channel_settings",
+  {
+    id: serial("id").primaryKey(),
+    brandId: integer("brand_id").references(() => brands.id),
+    channel: text("channel").notNull(),
+    settingKey: text("setting_key").notNull(),
+    settingValue: text("setting_value").notNull(),
+  },
+  (table) => [
+    uniqueIndex("cs_brand_channel_key_idx").on(table.brandId, table.channel, table.settingKey),
+  ]
+);
+
+export const insertChannelSettingSchema = createInsertSchema(channelSettings).omit({ id: true });
+export type InsertChannelSetting = z.infer<typeof insertChannelSettingSchema>;
+export type ChannelSetting = typeof channelSettings.$inferSelect;
 
 // ─── Dashboard Metadata (key-value store) ─────────────────────────────────
 

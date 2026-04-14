@@ -20,6 +20,7 @@ import {
   WeeklyFact, AllProduct,
 } from "@/lib/data";
 import { UnitEconomicsDrawer } from "@/components/UnitEconomicsDrawer";
+import { useBrand } from "@/lib/brand-context";
 
 // Date helpers
 function subtractWeeks(dateStr: string, weeks: number): string {
@@ -356,6 +357,7 @@ function calculateTrends(
 }
 
 export default function ProductPage() {
+  const { brandId } = useBrand();
   const [, params] = useRoute("/product/:sku");
   const [, setLocation] = useLocation();
   const sku = params?.sku ? decodeURIComponent(params.sku) : null;
@@ -377,7 +379,8 @@ export default function ProductPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Fetch product detail from API
-  const { data: detail, isLoading } = useProductDetail(
+  const { data: detail, isLoading } = useProductDetail(brandId,
+
     sku ?? "",
     effectiveDateRange.start,
     effectiveDateRange.end,

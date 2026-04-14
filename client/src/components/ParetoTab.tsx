@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie, ReferenceLine,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useBrand } from "@/lib/brand-context";
 import {
   usePareto,
   calculateGiniCoefficient,
@@ -29,7 +30,8 @@ const MUTED_PROFIT = "#6b7280";
 const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#94a3b8"];
 
 export function ParetoTab({ dateRange }: Props) {
-  const { data: rawProducts = [], isLoading } = usePareto(dateRange.start, dateRange.end);
+  const { brandId } = useBrand();
+  const { data: rawProducts = [], isLoading } = usePareto(brandId, dateRange.start, dateRange.end);
 
   const revenueSorted = useMemo(() => {
     const sorted = [...rawProducts].filter((p) => p.revenue > 0).sort((a, b) => b.revenue - a.revenue);
