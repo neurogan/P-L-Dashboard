@@ -15,6 +15,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Link } from "wouter";
+import { useBrand } from "@/lib/brand-context";
 import {
   formatCurrency, formatNumber, formatPercent, formatWeekLabel,
   useDynamicOverviewKpis, detectPreset, useChannelMix, useUnifiedProducts,
@@ -54,6 +55,7 @@ const ALL_COLUMNS = [
 const DEFAULT_ON = ["productTitle", "amazonRev", "shopifyRev", "totalRev", "netProfit", "totalUnits", "channels"];
 
 export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
+  const { brandId } = useBrand();
   const [sortKey, setSortKey] = useState("totalRev");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(DEFAULT_ON));
@@ -65,7 +67,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
   const hideChange = preset === "All";
 
   // Fetch unified hero chart from API (trailing 52 weeks)
-  const { data: weeklyChartData, isLoading: chartLoading } = useWeeklyChart(dateRange.start, dateRange.end);
+  const { data: weeklyChartData, isLoading: chartLoading } = useWeeklyChart(brandId, dateRange.start, dateRange.end);
   const heroData = useMemo(() => {
     if (!weeklyChartData) return [];
     return weeklyChartData.slice(-52).map((row) => ({
@@ -81,7 +83,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
 
   const { data: kpis, isLoading: kpisLoading } = useDynamicOverviewKpis(dateRange, preset);
 
-  const { data: channelMix = [] } = useChannelMix(dateRange.start, dateRange.end);
+  const { data: channelMix = [] } = useChannelMix(brandId, dateRange.start, dateRange.end);
 
   const channelMixTotal = useMemo(() => ({
     revenue: channelMix.reduce((s, c) => s + c.revenue, 0),
@@ -90,7 +92,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
     netProfit: channelMix.reduce((s, c) => s + (c.netProfit ?? 0), 0),
   }), [channelMix]);
 
-  const { data: products = [] } = useUnifiedProducts(dateRange.start, dateRange.end);
+  const { data: products = [] } = useUnifiedProducts(brandId, dateRange.start, dateRange.end);
 
   const sortedProducts = useMemo(() => {
     return [...products].sort((a, b) => {

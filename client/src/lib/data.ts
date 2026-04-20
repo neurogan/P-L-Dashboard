@@ -16,7 +16,7 @@ async function fetchApi<T>(url: string): Promise<T> {
   return res.json();
 }
 
-function buildUrl(path: string, params: Record<string, string | undefined>): string {
+export function buildUrl(path: string, params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v != null && v !== "") search.set(k, v);
@@ -446,9 +446,9 @@ export function useMeta() {
 /**
  * useProductsCatalog — GET /api/products-catalog (all products, no date filter).
  */
-export function useProductsCatalog() {
+export function useProductsCatalog(brandId?: number) {
   return useQuery<AllProduct[]>({
-    queryKey: ["/api/products-catalog"],
+    queryKey: ["/api/products-catalog", brandId],
     queryFn: () => fetchApi("/api/products-catalog"),
     staleTime: 5 * 60 * 1000,
   });
@@ -457,7 +457,7 @@ export function useProductsCatalog() {
 /**
  * useOverview — GET /api/overview, transform nested response to flat shape.
  */
-export function useOverview(startDate?: string, endDate?: string) {
+export function useOverview(brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<{
     totalRevenue: number;
     totalUnits: number;
@@ -475,7 +475,7 @@ export function useOverview(startDate?: string, endDate?: string) {
     queryKey: ["/api/overview", { startDate, endDate }],
     queryFn: async () => {
       const raw = await fetchApi<OverviewApiResponse>(
-        buildUrl("/api/overview", { startDate, endDate })
+        buildUrl("/api/overview", { brandId: String(brandId || 1), startDate, endDate })
       );
       return normalizeOverview(raw);
     },
@@ -486,12 +486,12 @@ export function useOverview(startDate?: string, endDate?: string) {
 /**
  * useChannelMix — GET /api/channel-mix with date filters.
  */
-export function useChannelMix(startDate?: string, endDate?: string) {
+export function useChannelMix(brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<ChannelMixRow[]>({
     queryKey: ["/api/channel-mix", { startDate, endDate }],
     queryFn: async () => {
       const rows = await fetchApi<any[]>(
-        buildUrl("/api/channel-mix", { startDate, endDate })
+        buildUrl("/api/channel-mix", { brandId: String(brandId || 1), startDate, endDate })
       );
       return rows.map((r) => ({
         channel: r.channel ?? "",
@@ -522,7 +522,7 @@ export function useProducts(
     queryKey: ["/api/products", { startDate, endDate, channel, sortBy, sortDir }],
     queryFn: async () => {
       const rows = await fetchApi<RawProductRow[]>(
-        buildUrl("/api/products", { startDate, endDate, channel })
+        buildUrl("/api/products", { brandId: String(brandId || 1), startDate, endDate, channel })
       );
       let result = rows
         .filter((r) => channel ? r.channel === channel : true)
@@ -544,12 +544,12 @@ export function useProducts(
  * useShopifyProducts — GET /api/products?channel=X.
  * Returns ShopifyProductAggregate[] for Shopify DTC or Faire channel.
  */
-export function useShopifyProducts(channel: string, startDate?: string, endDate?: string) {
+export function useShopifyProducts(channel: string, brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<ShopifyProductAggregate[]>({
     queryKey: ["/api/products", { startDate, endDate, channel }],
     queryFn: async () => {
       const rows = await fetchApi<RawProductRow[]>(
-        buildUrl("/api/products", { startDate, endDate, channel })
+        buildUrl("/api/products", { brandId: String(brandId || 1), startDate, endDate, channel })
       );
       return rows
         .filter((r) => r.channel === channel)
@@ -564,12 +564,12 @@ export function useShopifyProducts(channel: string, startDate?: string, endDate?
  * useUnifiedProducts — GET /api/products (all channels), aggregate by SKU.
  * Builds cross-channel summary for the Overview tab product table.
  */
-export function useUnifiedProducts(startDate?: string, endDate?: string) {
+export function useUnifiedProducts(brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<UnifiedProductRow[]>({
     queryKey: ["/api/unified-products", { startDate, endDate }],
     queryFn: async () => {
       const rows = await fetchApi<RawProductRow[]>(
-        buildUrl("/api/products", { startDate, endDate })
+        buildUrl("/api/products", { brandId: String(brandId || 1), startDate, endDate })
       );
       return buildUnifiedProducts(rows);
     },
@@ -581,12 +581,12 @@ export function useUnifiedProducts(startDate?: string, endDate?: string) {
  * useWeeklyChart — GET /api/weekly-chart with optional date filters.
  * Returns UnifiedHeroRow[] (channel revenue + totals per week).
  */
-export function useWeeklyChart(startDate?: string, endDate?: string, channel?: string) {
+export function useWeeklyChart(brandId?: number, startDate?: string, endDate?: string, channel?: string) {
   return useQuery<UnifiedHeroRow[]>({
     queryKey: ["/api/weekly-chart", { startDate, endDate, channel }],
     queryFn: async () => {
       const rows = await fetchApi<RawWeeklyChartRow[]>(
-        buildUrl("/api/weekly-chart", { startDate, endDate })
+        buildUrl("/api/weekly-chart", { brandId: String(brandId || 1), startDate, endDate })
       );
       return rows.map((r) => ({
         week: r.week,
@@ -683,7 +683,7 @@ export function useChannelHero(channel: string) {
 /**
  * useProductDetail — GET /api/product/:sku with date filters.
  */
-export function useProductDetail(sku: string, startDate?: string, endDate?: string) {
+export function useProductDetail(sku: string, brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<{
     product: any;
     weeklyMetrics: WeeklyFact[];
@@ -691,7 +691,7 @@ export function useProductDetail(sku: string, startDate?: string, endDate?: stri
     cogsPeriods: any[];
   }>({
     queryKey: ["/api/product", sku, { startDate, endDate }],
-    queryFn: () => fetchApi(buildUrl(`/api/product/${encodeURIComponent(sku)}`, { startDate, endDate })),
+    queryFn: () => fetchApi(buildUrl(`/api/product/${encodeURIComponent(sku)}`, { brandId: String(brandId || 1), startDate, endDate })),
     enabled: !!sku,
     staleTime: 60000,
   });
@@ -700,7 +700,7 @@ export function useProductDetail(sku: string, startDate?: string, endDate?: stri
 /**
  * useAdvertising — GET /api/advertising, transform {kpis, weeklyTrend, asinBreakdown}.
  */
-export function useAdvertising(startDate?: string, endDate?: string) {
+export function useAdvertising(brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<{
     totalSpend: number;
     totalAdSales: number;
@@ -717,7 +717,7 @@ export function useAdvertising(startDate?: string, endDate?: string) {
     queryKey: ["/api/advertising", { startDate, endDate }],
     queryFn: async () => {
       const raw = await fetchApi<any>(
-        buildUrl("/api/advertising", { startDate, endDate })
+        buildUrl("/api/advertising", { brandId: String(brandId || 1), startDate, endDate })
       );
       const kpis = raw.kpis ?? {};
       const weeklyTrend: any[] = raw.weeklyTrend ?? [];
@@ -762,12 +762,12 @@ export function useAdvertising(startDate?: string, endDate?: string) {
 /**
  * usePareto — GET /api/pareto, returns the products array from the response.
  */
-export function usePareto(startDate?: string, endDate?: string) {
+export function usePareto(brandId?: number, startDate?: string, endDate?: string) {
   return useQuery<ParetoProduct[]>({
     queryKey: ["/api/pareto", { startDate, endDate }],
     queryFn: async () => {
       const raw = await fetchApi<any>(
-        buildUrl("/api/pareto", { startDate, endDate })
+        buildUrl("/api/pareto", { brandId: String(brandId || 1), startDate, endDate })
       );
       // Server returns { products, summary } — extract products array
       const rows: any[] = Array.isArray(raw) ? raw : (raw.products ?? []);

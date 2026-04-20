@@ -24,6 +24,7 @@ import {
   MonthlyProductData,
 } from "@/lib/data";
 import { useProductDetail } from "@/lib/api";
+import { useBrand } from "@/lib/brand-context";
 
 interface Props {
   product: ProductAggregate;
@@ -105,9 +106,11 @@ function aggregateToMonthly(weeklyRows: WeeklyFact[]): MonthlyProductData[] {
 }
 
 export function ProductDetail({ product, dateRange, onClose }: Props) {
+  const { brandId } = useBrand();
   const [granularity, setGranularity] = useState<Granularity>("weekly");
 
-  const { data: detailData, isLoading } = useProductDetail(
+  const { data: detailData, isLoading } = useProductDetail(brandId,
+
     product.sku,
     dateRange.start,
     dateRange.end,
