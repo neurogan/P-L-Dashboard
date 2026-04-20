@@ -103,7 +103,11 @@ app.use((req, res, next) => {
       // Run initial sync after startup (last 12 weeks), then daily
       if (process.env.NODE_ENV === "production") {
         const runSync = () => {
-          const endDate = new Date().toISOString().split("T")[0];
+          // +2 days buffer so the just-completed week (ends Monday 00:00 PDT)
+          // falls within the interval and Amazon returns it as a complete week
+          const end = new Date();
+          end.setDate(end.getDate() + 2);
+          const endDate = end.toISOString().split("T")[0];
           const start = new Date();
           start.setDate(start.getDate() - 84); // 12 weeks
           const startDate = start.toISOString().split("T")[0];
