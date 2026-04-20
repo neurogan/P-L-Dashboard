@@ -139,7 +139,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
   const isShopify = channel === "shopify_dtc";
 
   // Fetch channel hero data from API
-  const { data: rawHeroData, isLoading: heroLoading } = useChannelHero(brandId, channel);
+  const { data: rawHeroData, isLoading: heroLoading } = useChannelHero(channel);
   const heroData = useMemo(() => {
     if (!rawHeroData) return [];
     return rawHeroData.slice(-52).map((row) => ({
