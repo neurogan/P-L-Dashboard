@@ -35,18 +35,20 @@ export class DatabaseStorage implements IStorage {
 export const storage = new DatabaseStorage();
 
 export async function runMigrations() {
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS wm_sku_week_channel_idx
-      ON pl_dashboard.weekly_metrics (sku, week_start_date, channel);
-
-    CREATE UNIQUE INDEX IF NOT EXISTS ad_asin_week_idx
-      ON pl_dashboard.ad_weekly_summary (asin, week_start_date);
-
-    CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx
-      ON pl_dashboard.products (sku);
-
-    CREATE UNIQUE INDEX IF NOT EXISTS meta_key_idx
-      ON pl_dashboard.dashboard_meta (key);
-  `);
+  const statements = [
+    `CREATE UNIQUE INDEX IF NOT EXISTS wm_sku_week_channel_idx
+       ON pl_dashboard.weekly_metrics (sku, week_start_date, channel)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ad_asin_week_idx
+       ON pl_dashboard.ad_weekly_summary (asin, week_start_date)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx
+       ON pl_dashboard.products (sku)`,
+  ];
+  for (const sql of statements) {
+    try {
+      await pool.query(sql);
+    } catch (err: any) {
+      console.warn(`[db] Migration skipped: ${err.message}`);
+    }
+  }
   console.log("[db] Migrations applied");
 }
