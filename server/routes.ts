@@ -1,26 +1,35 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { db } from "./storage";
-import { weeklyMetrics, products, adWeeklySummary, cogsPeriods } from "@shared/schema";
-import { sql, eq, and, gte, lte, desc, asc, sum, count, avg } from "drizzle-orm";
+import { weeklyMetrics, products, adWeeklySummary, cogsPeriods, brands, skuAliases } from "@shared/schema";
+import { sql, eq, and, gte, lte, desc, asc, sum, count, avg, isNull } from "drizzle-orm";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
-  // ── Helper: parse date range from query params ────────────────────────
-  function parseDateRange(req: any) {
+  // ── Helper: parse date range + brandId from query params ──────────────
+  function parseParams(req: any) {
     const startDate = (req.query.startDate as string) || "2024-01-01";
     const endDate = (req.query.endDate as string) || "2099-12-31";
-    return { startDate, endDate };
+    const brandId = parseInt(req.query.brandId as string) || 1;
+    return { startDate, endDate, brandId };
   }
+
+  // ── GET /api/brands ───────────────────────────────────────────────────
+  app.get("/api/brands", async (_req, res) => {
+    try {
+      const rows = await db.select().from(brands).where(eq(brands.isActive, true)).orderBy(asc(brands.id));
+      res.json(rows);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
 
   // ── GET /api/overview ─────────────────────────────────────────────────
   // Summary KPIs across all channels for a date range
   app.get("/api/overview", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
 
       const rows = await db
         .select({
@@ -37,6 +46,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -82,7 +92,7 @@ export async function registerRoutes(
   // ── GET /api/channel-mix ──────────────────────────────────────────────
   app.get("/api/channel-mix", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
 
       const rows = await db
         .select({
@@ -95,6 +105,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -122,7 +133,7 @@ export async function registerRoutes(
   // Aggregated product-level data for the product table
   app.get("/api/products", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
       const channel = req.query.channel as string | undefined;
 
       let query = db
@@ -149,6 +160,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate),
             channel ? eq(weeklyMetrics.channel, channel) : undefined
@@ -198,7 +210,7 @@ export async function registerRoutes(
   // Time series for the hero chart (revenue by channel per week)
   app.get("/api/weekly-chart", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
 
       const rows = await db
         .select({
@@ -215,6 +227,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -265,14 +278,14 @@ export async function registerRoutes(
   // All data for a specific product across channels
   app.get("/api/product/:sku", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
       const sku = req.params.sku;
 
       // Get product info
       const productRows = await db
         .select()
         .from(products)
-        .where(eq(products.sku, sku));
+        .where(and(eq(products.brandId, brandId), eq(products.sku, sku)));
       const product = productRows[0] || null;
 
       // Get weekly metrics
@@ -281,6 +294,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
             eq(weeklyMetrics.sku, sku),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
@@ -297,6 +311,7 @@ export async function registerRoutes(
           .from(adWeeklySummary)
           .where(
             and(
+              eq(adWeeklySummary.brandId, brandId),
               eq(adWeeklySummary.asin, asin),
               gte(adWeeklySummary.weekStartDate, startDate),
               lte(adWeeklySummary.weekStartDate, endDate)
@@ -309,7 +324,7 @@ export async function registerRoutes(
       const cogsData = await db
         .select()
         .from(cogsPeriods)
-        .where(eq(cogsPeriods.sku, sku));
+        .where(and(eq(cogsPeriods.brandId, brandId), eq(cogsPeriods.sku, sku)));
 
       res.json({ product, weeklyMetrics: metrics, adData, cogsData });
     } catch (err: any) {
@@ -320,7 +335,7 @@ export async function registerRoutes(
   // ── GET /api/advertising ──────────────────────────────────────────────
   app.get("/api/advertising", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
 
       // Weekly totals
       const weeklyTrend = await db
@@ -335,6 +350,7 @@ export async function registerRoutes(
         .from(adWeeklySummary)
         .where(
           and(
+            eq(adWeeklySummary.brandId, brandId),
             gte(adWeeklySummary.weekStartDate, startDate),
             lte(adWeeklySummary.weekStartDate, endDate)
           )
@@ -356,6 +372,7 @@ export async function registerRoutes(
         .from(adWeeklySummary)
         .where(
           and(
+            eq(adWeeklySummary.brandId, brandId),
             gte(adWeeklySummary.weekStartDate, startDate),
             lte(adWeeklySummary.weekStartDate, endDate)
           )
@@ -399,7 +416,7 @@ export async function registerRoutes(
   // ── GET /api/pareto ───────────────────────────────────────────────────
   app.get("/api/pareto", async (req, res) => {
     try {
-      const { startDate, endDate } = parseDateRange(req);
+      const { startDate, endDate, brandId } = parseParams(req);
       const metric = (req.query.metric as string) || "revenue";
 
       const metricCol = metric === "profit" ? weeklyMetrics.netProfit : weeklyMetrics.revenue;
@@ -418,6 +435,8 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
+            eq(weeklyMetrics.brandId, brandId),
+            eq(weeklyMetrics.brandId, brandId),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -507,6 +526,8 @@ export async function registerRoutes(
   app.get("/api/cogs-periods", async (req, res) => {
     const { sku } = req.query as { sku?: string };
     const conditions = [];
+    const brandId = parseInt(req.query.brandId as string) || 1;
+    conditions.push(eq(cogsPeriods.brandId, brandId));
     if (sku) conditions.push(eq(cogsPeriods.sku, sku));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -516,9 +537,67 @@ export async function registerRoutes(
 
   // ─── GET /api/products-catalog — Product catalog ────────────────────────
 
-  app.get("/api/products-catalog", async (_req, res) => {
-    const rows = await db.select().from(products);
+  app.get("/api/products-catalog", async (req, res) => {
+    const brandId = parseInt(req.query.brandId as string) || 1;
+    const rows = await db.select().from(products).where(eq(products.brandId, brandId));
     res.json(rows);
+  });
+
+
+  // ── SKU Aliases CRUD ────────────────────────────────────────────────────
+
+  app.get("/api/sku-aliases", async (req, res) => {
+    try {
+      const brandId = parseInt(req.query.brandId as string) || 1;
+      const rows = await db.select().from(skuAliases).where(eq(skuAliases.brandId, brandId)).orderBy(asc(skuAliases.channelSku));
+      res.json(rows);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/sku-aliases", async (req, res) => {
+    try {
+      const { brandId, channel, channelSku, canonicalSku, notes } = req.body;
+      const rows = await db.insert(skuAliases).values({
+        brandId: brandId || 1, channel, channelSku, canonicalSku, notes
+      }).returning();
+      res.json(rows[0]);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/sku-aliases/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await db.delete(skuAliases).where(eq(skuAliases.id, id));
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── SKU Mismatches — auto-detect Amazon SKUs not on Shopify ──────────────
+
+  app.get("/api/sku-mismatches", async (req, res) => {
+    try {
+      const brandId = parseInt(req.query.brandId as string) || 1;
+      // Get all unique SKUs by channel for this brand
+      const rows = await db.select({
+        sku: weeklyMetrics.sku,
+        channel: weeklyMetrics.channel,
+      }).from(weeklyMetrics)
+        .where(eq(weeklyMetrics.brandId, brandId))
+        .groupBy(weeklyMetrics.sku, weeklyMetrics.channel);
+
+      const skusByChannel: Record<string, Set<string>> = {};
+      for (const row of rows) {
+        if (!skusByChannel[row.channel]) skusByChannel[row.channel] = new Set();
+        skusByChannel[row.channel].add(row.sku);
+      }
+
+      // Find SKUs on Amazon but not on Shopify (potential mapping candidates)
+      const amazonSkus = skusByChannel['amazon'] || new Set();
+      const shopifySkus = skusByChannel['shopify_dtc'] || new Set();
+      const mismatches = [...amazonSkus].filter(s => !shopifySkus.has(s));
+
+      res.json({ mismatches, amazonCount: amazonSkus.size, shopifyCount: shopifySkus.size });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   return httpServer;
