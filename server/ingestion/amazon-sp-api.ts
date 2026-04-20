@@ -311,6 +311,7 @@ export async function syncAmazonSales(startDate: string, endDate: string) {
         await db
           .insert(weeklyMetrics)
           .values({
+            brandId: product.brandId ?? 1,
             sku: product.sku,
             asin: product.asin,
             channel: "amazon",
