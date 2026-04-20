@@ -110,8 +110,8 @@ export default function Dashboard() {
   // Fetch data needed for CSV export (lazy — only used on click)
   const { data: adData } = useAdvertising(brandId, effectiveDateRange.start, effectiveDateRange.end);
   const { data: unifiedProducts } = useUnifiedProducts(brandId, effectiveDateRange.start, effectiveDateRange.end);
-  const { data: shopifyProds } = useShopifyProducts(brandId, "shopify_dtc", effectiveDateRange.start, effectiveDateRange.end);
-  const { data: faireProds } = useShopifyProducts(brandId, "faire", effectiveDateRange.start, effectiveDateRange.end);
+  const { data: shopifyProds } = useShopifyProducts("shopify_dtc", brandId, effectiveDateRange.start, effectiveDateRange.end);
+  const { data: faireProds } = useShopifyProducts("faire", brandId, effectiveDateRange.start, effectiveDateRange.end);
 
   const handleExport = useCallback(() => {
     if (activeTab === "advertising") {

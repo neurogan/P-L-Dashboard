@@ -7,6 +7,7 @@ import {
   useDynamicAmazonKpis, detectPreset,
   formatCurrency, formatNumber, formatPercent,
 } from "@/lib/data";
+import { useBrand } from "@/lib/brand-context";
 
 interface Props {
   dateRange: { start: string; end: string };
@@ -15,12 +16,13 @@ interface Props {
 }
 
 export function KpiCards({ dateRange, minDate, maxDate }: Props) {
+  const { brandId } = useBrand();
   const preset = useMemo(
     () => detectPreset(dateRange, minDate, maxDate),
     [dateRange, minDate, maxDate]
   );
 
-  const { data: kpis, isLoading } = useDynamicAmazonKpis(dateRange, preset);
+  const { data: kpis, isLoading } = useDynamicAmazonKpis(brandId, dateRange, preset);
 
   const hideChange = preset === "All";
 

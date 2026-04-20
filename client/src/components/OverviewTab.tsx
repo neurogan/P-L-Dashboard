@@ -81,7 +81,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
     }));
   }, [weeklyChartData]);
 
-  const { data: kpis, isLoading: kpisLoading } = useDynamicOverviewKpis(dateRange, preset);
+  const { data: kpis, isLoading: kpisLoading } = useDynamicOverviewKpis(brandId, dateRange, preset);
 
   const { data: channelMix = [] } = useChannelMix(brandId, dateRange.start, dateRange.end);
 
