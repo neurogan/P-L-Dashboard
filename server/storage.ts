@@ -45,6 +45,8 @@ export async function runMigrations() {
        is_active BOOLEAN DEFAULT true,
        created_at TIMESTAMP DEFAULT NOW()
      )`,
+    // Add created_at if table was created without it (e.g. by a partial drizzle-kit push)
+    `ALTER TABLE pl_dashboard.brands ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`,
     // Seed the three Neurogan brands
     `INSERT INTO pl_dashboard.brands (id, brand_key, brand_name, platforms, is_active)
      VALUES

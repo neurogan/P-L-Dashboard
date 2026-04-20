@@ -155,7 +155,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
     [dateRange, minDate, maxDate]
   );
 
-  const { data: kpis, isLoading: kpisLoading } = useDynamicChannelKpis(channel, dateRange, preset);
+  const { data: kpis, isLoading: kpisLoading } = useDynamicChannelKpis(channel, brandId, dateRange, preset);
 
   const hideChange = preset === "All";
 

@@ -73,7 +73,7 @@ export function DashboardHeader({ onExport }: Props) {
         </div>
 
         {/* Right: Controls */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-3 flex-shrink-0">
           {generatedAt && (
             <span className="hidden sm:block text-xs text-muted-foreground tabular-nums">
               Updated {generatedAt}
