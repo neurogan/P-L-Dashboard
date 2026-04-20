@@ -183,6 +183,7 @@ export async function syncAmazonProducts() {
         });
       updated++;
     } catch (err: any) {
+      console.error(`[Amazon Products] Error for ${sku}: ${err.message}`);
       errors.push(`${sku}: ${err.message}`);
     }
   }
@@ -234,12 +235,18 @@ async function getOrderMetrics(
 
     if (!res.ok) {
       const text = await res.text();
-      console.error(`SP-API error for ${asin}: ${res.status} ${text}`);
+      console.error(`SP-API error for ${asin} (${buyerType}): HTTP ${res.status} — ${text.slice(0, 500)}`);
       return [];
     }
 
-    const data = await res.json();
-    return data.payload || [];
+    const text = await res.text();
+    try {
+      const data = JSON.parse(text);
+      return data.payload || [];
+    } catch {
+      console.error(`SP-API parse error for ${asin} (${buyerType}): response was not JSON — ${text.slice(0, 500)}`);
+      return [];
+    }
   }
 
   console.error(`SP-API gave up on ${asin} after 3 retries (rate limited)`);
@@ -341,6 +348,7 @@ export async function syncAmazonSales(startDate: string, endDate: string) {
         updated++;
       }
     } catch (err: any) {
+      console.error(`[Amazon SP-API] Error for ${product.asin}: ${err.message}`);
       errors.push(`${product.asin}: ${err.message}`);
     }
   }
