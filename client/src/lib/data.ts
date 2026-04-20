@@ -512,6 +512,7 @@ export function useChannelMix(brandId?: number, startDate?: string, endDate?: st
  * Returns ProductAggregate[] with normalized field names.
  */
 export function useProducts(
+  brandId?: number,
   startDate?: string,
   endDate?: string,
   channel?: string,
@@ -519,7 +520,7 @@ export function useProducts(
   sortDir?: string,
 ) {
   return useQuery<ProductAggregate[]>({
-    queryKey: ["/api/products", { startDate, endDate, channel, sortBy, sortDir }],
+    queryKey: ["/api/products", { brandId, startDate, endDate, channel, sortBy, sortDir }],
     queryFn: async () => {
       const rows = await fetchApi<RawProductRow[]>(
         buildUrl("/api/products", { brandId: String(brandId || 1), startDate, endDate, channel })
@@ -1323,10 +1324,10 @@ export interface ChannelKpiData {
 
 // ─── Dynamic KPI hooks (two-period comparison) ────────────────────────────
 
-export function useDynamicAmazonKpis(dateRange: { start: string; end: string }, preset: DatePreset) {
-  const current = useOverview(dateRange.start, dateRange.end);
+export function useDynamicAmazonKpis(brandId: number = 1, dateRange: { start: string; end: string }, preset: DatePreset) {
+  const current = useOverview(brandId, dateRange.start, dateRange.end);
   const prior = getPriorPeriod(dateRange, preset);
-  const prev = useOverview(prior?.start, prior?.end);
+  const prev = useOverview(brandId, prior?.start, prior?.end);
 
   if (!current.data) return { data: null, isLoading: current.isLoading };
 
@@ -1365,10 +1366,10 @@ export function useDynamicAmazonKpis(dateRange: { start: string; end: string }, 
   return { data: result, isLoading: current.isLoading || prev.isLoading };
 }
 
-export function useDynamicOverviewKpis(dateRange: { start: string; end: string }, preset: DatePreset) {
-  const current = useOverview(dateRange.start, dateRange.end);
+export function useDynamicOverviewKpis(brandId: number = 1, dateRange: { start: string; end: string }, preset: DatePreset) {
+  const current = useOverview(brandId, dateRange.start, dateRange.end);
   const prior = getPriorPeriod(dateRange, preset);
-  const prev = useOverview(prior?.start, prior?.end);
+  const prev = useOverview(brandId, prior?.start, prior?.end);
 
   if (!current.data) return { data: null, isLoading: current.isLoading };
 
