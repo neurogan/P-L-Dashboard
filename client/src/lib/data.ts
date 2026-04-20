@@ -1402,10 +1402,10 @@ export function useDynamicOverviewKpis(dateRange: { start: string; end: string }
   return { data: result, isLoading: current.isLoading || prev.isLoading };
 }
 
-export function useDynamicChannelKpis(channel: "shopify_dtc" | "faire", dateRange: { start: string; end: string }, preset: DatePreset) {
-  const currentProducts = useShopifyProducts(channel, dateRange.start, dateRange.end);
+export function useDynamicChannelKpis(channel: "shopify_dtc" | "faire", brandId: number = 1, dateRange: { start: string; end: string }, preset: DatePreset) {
+  const currentProducts = useShopifyProducts(channel, brandId, dateRange.start, dateRange.end);
   const prior = getPriorPeriod(dateRange, preset);
-  const prevProducts = useShopifyProducts(channel, prior?.start, prior?.end);
+  const prevProducts = useShopifyProducts(channel, brandId, prior?.start, prior?.end);
 
   if (!currentProducts.data) return { data: null, isLoading: currentProducts.isLoading };
 

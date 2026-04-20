@@ -260,7 +260,7 @@ export function OverviewTab({ dateRange, minDate, maxDate }: Props) {
                       </div>
                     </TableCell>
                     <TableCell className="text-right text-xs tabular-nums px-3">{formatCurrency(row.revenue)}</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums px-3">{formatPercent(row.pctOfTotal)}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums px-3">{row.pctOfTotal != null ? `${row.pctOfTotal.toFixed(1)}%` : "—"}</TableCell>
                     <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.orders)}</TableCell>
                     <TableCell className="text-right text-xs tabular-nums px-3">{formatNumber(row.units)}</TableCell>
                     <TableCell className={`text-right text-xs tabular-nums px-3 font-medium ${row.netProfit != null && row.netProfit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
