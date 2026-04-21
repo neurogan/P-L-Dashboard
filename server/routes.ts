@@ -46,7 +46,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -105,7 +105,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -160,7 +160,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate),
             channel ? eq(weeklyMetrics.channel, channel) : undefined
@@ -227,7 +227,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -285,7 +285,7 @@ export async function registerRoutes(
       const productRows = await db
         .select()
         .from(products)
-        .where(and(eq(products.brandId, brandId), eq(products.sku, sku)));
+        .where(and(sql`COALESCE(${products.brandId}, 1) = ${brandId}`, eq(products.sku, sku)));
       const product = productRows[0] || null;
 
       // Get weekly metrics
@@ -294,7 +294,7 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             eq(weeklyMetrics.sku, sku),
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
@@ -311,7 +311,7 @@ export async function registerRoutes(
           .from(adWeeklySummary)
           .where(
             and(
-              eq(adWeeklySummary.brandId, brandId),
+              sql`COALESCE(${adWeeklySummary.brandId}, 1) = ${brandId}`,
               eq(adWeeklySummary.asin, asin),
               gte(adWeeklySummary.weekStartDate, startDate),
               lte(adWeeklySummary.weekStartDate, endDate)
@@ -324,7 +324,7 @@ export async function registerRoutes(
       const cogsData = await db
         .select()
         .from(cogsPeriods)
-        .where(and(eq(cogsPeriods.brandId, brandId), eq(cogsPeriods.sku, sku)));
+        .where(and(sql`COALESCE(${cogsPeriods.brandId}, 1) = ${brandId}`, eq(cogsPeriods.sku, sku)));
 
       res.json({ product, weeklyMetrics: metrics, adData, cogsData });
     } catch (err: any) {
@@ -350,7 +350,7 @@ export async function registerRoutes(
         .from(adWeeklySummary)
         .where(
           and(
-            eq(adWeeklySummary.brandId, brandId),
+            sql`COALESCE(${adWeeklySummary.brandId}, 1) = ${brandId}`,
             gte(adWeeklySummary.weekStartDate, startDate),
             lte(adWeeklySummary.weekStartDate, endDate)
           )
@@ -372,7 +372,7 @@ export async function registerRoutes(
         .from(adWeeklySummary)
         .where(
           and(
-            eq(adWeeklySummary.brandId, brandId),
+            sql`COALESCE(${adWeeklySummary.brandId}, 1) = ${brandId}`,
             gte(adWeeklySummary.weekStartDate, startDate),
             lte(adWeeklySummary.weekStartDate, endDate)
           )
@@ -435,8 +435,8 @@ export async function registerRoutes(
         .from(weeklyMetrics)
         .where(
           and(
-            eq(weeklyMetrics.brandId, brandId),
-            eq(weeklyMetrics.brandId, brandId),
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
+            sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`,
             gte(weeklyMetrics.weekStartDate, startDate),
             lte(weeklyMetrics.weekStartDate, endDate)
           )
@@ -527,7 +527,7 @@ export async function registerRoutes(
     const { sku } = req.query as { sku?: string };
     const conditions = [];
     const brandId = parseInt(req.query.brandId as string) || 1;
-    conditions.push(eq(cogsPeriods.brandId, brandId));
+    conditions.push(sql`COALESCE(${cogsPeriods.brandId}, 1) = ${brandId}`);
     if (sku) conditions.push(eq(cogsPeriods.sku, sku));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -539,7 +539,7 @@ export async function registerRoutes(
 
   app.get("/api/products-catalog", async (req, res) => {
     const brandId = parseInt(req.query.brandId as string) || 1;
-    const rows = await db.select().from(products).where(eq(products.brandId, brandId));
+    const rows = await db.select().from(products).where(sql`COALESCE(${products.brandId}, 1) = ${brandId}`);
     res.json(rows);
   });
 
@@ -582,7 +582,7 @@ export async function registerRoutes(
         sku: weeklyMetrics.sku,
         channel: weeklyMetrics.channel,
       }).from(weeklyMetrics)
-        .where(eq(weeklyMetrics.brandId, brandId))
+        .where(sql`COALESCE(${weeklyMetrics.brandId}, 1) = ${brandId}`)
         .groupBy(weeklyMetrics.sku, weeklyMetrics.channel);
 
       const skusByChannel: Record<string, Set<string>> = {};
