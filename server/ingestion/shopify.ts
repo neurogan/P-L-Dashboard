@@ -265,6 +265,7 @@ export async function syncShopifyOrders(startDate: string, endDate: string) {
       await db
         .insert(weeklyMetrics)
         .values({
+          brandId: 1,
           sku,
           channel,
           weekStartDate: week,

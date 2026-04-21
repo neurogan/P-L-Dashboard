@@ -159,7 +159,7 @@ export function ChannelTab({ channel, dateRange, minDate, maxDate }: Props) {
 
   const hideChange = preset === "All";
 
-  const { data: products = [] } = useShopifyProducts(brandId, channel, dateRange.start, dateRange.end);
+  const { data: products = [] } = useShopifyProducts(channel, brandId, dateRange.start, dateRange.end);
 
   const totals = useMemo(() => getShopifyTotals(products), [products]);
 
